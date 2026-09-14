@@ -835,7 +835,6 @@ private fun ConnectionMethodTabs(
             locallyBlocked = localNetworkBlocked,
         )?.toDisplayString() ?: when {
             error == null -> null
-            error is ServerIdMismatchException -> Res.string.server_id_mismatch_error.toDisplayString()
             isTelevisionDevice() -> friendlyConnectionError(error)
             else -> error.message?.toDisplayString()
         }
