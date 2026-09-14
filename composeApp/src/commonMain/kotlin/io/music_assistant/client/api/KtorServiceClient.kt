@@ -12,6 +12,7 @@ import io.ktor.serialization.kotlinx.KotlinxWebsocketSerializationConverter
 import io.music_assistant.client.data.model.server.AuthorizationResponse
 import io.music_assistant.client.data.model.server.LoginResponse
 import io.music_assistant.client.data.model.server.ServerInfo
+import io.music_assistant.client.data.model.server.events.CoreStateUpdatedEvent
 import io.music_assistant.client.data.model.server.events.Event
 import io.music_assistant.client.imageloader.ARTWORK_DECODE_SIZE
 import io.music_assistant.client.imageloader.ImageCacheInvalidator
@@ -30,6 +31,7 @@ import io.music_assistant.client.utils.myJson
 import io.music_assistant.client.utils.platformLocale
 import io.music_assistant.client.utils.serverLocalizationLocale
 import io.music_assistant.client.utils.update
+import io.music_assistant.client.utils.withRefreshedServerInfo
 import io.music_assistant.client.webrtc.model.RemoteId
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
@@ -661,6 +663,9 @@ class KtorServiceClient(
             backgroundInfo = { BackgroundedConnectionInfo.Direct(connection) },
             onFreshConnect = {
                 settings.setLastConnectionMode("direct")
+                // Provisional: the server has not named itself yet, so this row has no id.
+                // It keeps JIT reconnect able to recover a login that did not finish, and
+                // AuthenticationManager absorbs it once the server identifies itself.
                 settings.addOrUpdateHistoryEntry(
                     ConnectionHistoryEntry(
                         type = ConnectionType.DIRECT,
@@ -716,6 +721,7 @@ class KtorServiceClient(
             backgroundInfo = { BackgroundedConnectionInfo.WebRTC(remoteId) },
             onFreshConnect = {
                 settings.setLastConnectionMode("webrtc")
+                // Provisional — see the Direct path above.
                 settings.addOrUpdateHistoryEntry(
                     ConnectionHistoryEntry(
                         type = ConnectionType.WEBRTC,
@@ -936,10 +942,32 @@ class KtorServiceClient(
             }
 
             message.containsKey("event") -> {
-                Event(message).event()?.let { _eventsFlow.emit(it) }
+                Event(message).event()?.let { event ->
+                    (event as? CoreStateUpdatedEvent)?.let { refreshServerInfo(it.data) }
+                    _eventsFlow.emit(event)
+                }
             }
 
             else -> logger.i { "Unknown message: $message" }
+        }
+    }
+
+    /**
+     * Live refresh of the cached [ServerInfo] from a `core_state_updated` push.
+     *
+     * The guard itself lives in [withRefreshedServerInfo] and runs inside the state update, so a
+     * concurrent auth write cannot be clobbered. The pre-check here only buys an early log of the
+     * ignored case.
+     */
+    private fun refreshServerInfo(incoming: ServerInfo) {
+        val cachedId = (_sessionState.value as? SessionState.Connected)?.serverInfo?.serverId
+        if (cachedId != incoming.serverId) {
+            logger.d { "Ignoring core_state_updated for ${incoming.serverId} (cached server: $cachedId)" }
+            return
+        }
+        _sessionState.update { state ->
+            val connected = state as? SessionState.Connected ?: return@update state
+            connected.update(connectionData = connected.connectionData.withRefreshedServerInfo(incoming))
         }
     }
 
@@ -1028,16 +1056,8 @@ class KtorServiceClient(
     }
 
     private fun savedTokenForState(state: SessionState.Connected): String? {
-        val id = when (state) {
-            is SessionState.Connected.Direct -> settings.getDirectServerIdentifier(
-                state.connectionInfo.host,
-                state.connectionInfo.port,
-                state.connectionInfo.isTls,
-                state.connectionInfo.basePath,
-            )
-            is SessionState.Connected.WebRTC -> settings.getWebRTCServerIdentifier(state.remoteId.rawId)
-        }
-        return settings.getTokenForServer(id)
+        // Null until `server/hello` lands: without the server id there is no token to find.
+        return state.serverInfo?.serverId?.let { settings.getTokenForServer(it) }
     }
 
     override suspend fun sendRequest(request: Request): Result<Answer> {

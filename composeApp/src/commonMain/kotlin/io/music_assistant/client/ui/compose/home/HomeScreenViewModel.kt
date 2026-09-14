@@ -19,6 +19,8 @@ import io.music_assistant.client.data.model.server.ServerUser
 import io.music_assistant.client.data.model.server.supportsLeaderLeave
 import io.music_assistant.client.data.model.server.supportsSleepTimer
 import io.music_assistant.client.data.repository.MediaItemRepository
+import io.music_assistant.client.data.repository.fetchRecommendationRowItems
+import io.music_assistant.client.data.repository.fetchRecommendationRows
 import io.music_assistant.client.player.sendspin.SendspinState
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.DataState
@@ -328,7 +330,7 @@ class HomeScreenViewModel(
                             media = listOf(mediaUri),
                             queueOrPlayerId = queueId,
                             option = option,
-                            radioMode = radio && item !is Genre,
+                            endlessMixMode = radio && item !is Genre,
                         ),
                     )
                 }
@@ -424,22 +426,9 @@ class HomeScreenViewModel(
         onOpenExternalLink("$url/?code=${currentServerToken().orEmpty()}#/settings/editplayer/$id/dsp")
     }
 
-    private fun currentServerToken(): String? = when (val state = apiClient.sessionState.value) {
-        is SessionState.Connected.Direct ->
-            settings.getTokenForServer(
-                settings.getDirectServerIdentifier(
-                    state.connectionInfo.host,
-                    state.connectionInfo.port,
-                    state.connectionInfo.isTls,
-                    state.connectionInfo.basePath,
-                ),
-            )
-
-        is SessionState.Connected.WebRTC ->
-            settings.getTokenForServer(settings.getWebRTCServerIdentifier(state.remoteId.rawId))
-
-        else -> null
-    }
+    private fun currentServerToken(): String? =
+        (apiClient.sessionState.value as? SessionState.Connected)
+            ?.serverInfo?.serverId?.let { settings.getTokenForServer(it) }
 
     private fun onOpenExternalLink(url: String) = viewModelScope.launch { _links.emit(url) }
 

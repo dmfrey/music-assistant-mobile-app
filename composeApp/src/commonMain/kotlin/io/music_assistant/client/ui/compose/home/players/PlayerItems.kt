@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import io.music_assistant.client.data.model.client.Player
 import io.music_assistant.client.data.model.client.PlayerData
 import io.music_assistant.client.data.model.client.PlayerDataFixtures
 import io.music_assistant.client.data.model.client.ResolvedChapter
@@ -88,8 +89,10 @@ import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.cd_favorite
 import musicassistantclient.composeapp.generated.resources.cd_lyrics
 import musicassistantclient.composeapp.generated.resources.cd_playing
+import musicassistantclient.composeapp.generated.resources.player_needs_setup
 import musicassistantclient.composeapp.generated.resources.player_power_on
 import musicassistantclient.composeapp.generated.resources.player_powered_off
+import musicassistantclient.composeapp.generated.resources.player_standby
 import musicassistantclient.composeapp.generated.resources.players_nothing
 import musicassistantclient.composeapp.generated.resources.queue_cannot_play
 import org.jetbrains.compose.resources.stringResource
@@ -165,12 +168,9 @@ fun CompactPlayerItem(
 
             // Track info
             val poweredOff = item.player.isPoweredOff
-            val (trackName, trackContentDescription) = if (poweredOff) {
-                stringResource(Res.string.player_powered_off)
-                    .let { it to it }
-            } else {
-                trackNameAndContentDescription(currentMedia?.title)
-            }
+            val (trackName, trackContentDescription) = item.player.dormantLabel()
+                ?.let { it to it }
+                ?: trackNameAndContentDescription(currentMedia?.title)
             // Leading inset == fade width: at rest the left gradient covers only this empty pad
             // (first glyph crisp); the marquee scrolls the [pad][text] unit so text dissolves
             // toward the artwork when it overflows.
@@ -294,6 +294,10 @@ fun FullPlayerItem(
     lyricsAvailable: Boolean = false,
     onLyricsClick: () -> Unit = {},
     tvFocusFlow: TvFocusFlow? = null,
+    // The quality pill and the speed pill only ask for their dialog; the dialogs themselves
+    // live outside the pager so a page change cannot tear them down mid-gesture.
+    onAudioChainClick: () -> Unit = {},
+    onPlaybackSpeedClick: () -> Unit = {},
     // Server preference gate for the chapter-relative timeline.
     chapterProgressEnabled: Boolean = true,
 ) {
@@ -353,11 +357,9 @@ fun FullPlayerItem(
 
         // Track info
         val poweredOff = item.player.isPoweredOff
-        val (trackName, trackContentDescription) = if (poweredOff) {
-            stringResource(Res.string.player_powered_off).let { it to it }
-        } else {
-            trackNameAndContentDescription(currentMedia?.title)
-        }
+        val (trackName, trackContentDescription) = item.player.dormantLabel()
+            ?.let { it to it }
+            ?: trackNameAndContentDescription(currentMedia?.title)
 
         // Powered off: present the "no media" state — disabled slider, empty time labels.
         val duration = if (poweredOff) null else currentMedia?.duration?.takeIf { it > 0 }?.toFloat()
@@ -614,8 +616,6 @@ fun FullPlayerItem(
             val currentQueueItem = item.queueInfo?.currentItem
             val tier = currentQueueItem?.qualityTier
             val isLq = tier == QualityTier.LQ
-            var showChainDialog by remember(currentQueueItem?.id) { mutableStateOf(false) }
-            var showSpeedDialog by remember(currentQueueItem?.id) { mutableStateOf(false) }
 
             // Variable speed: server-supported only for audiobooks/podcasts, and only
             // when the queue payload carries `playback_speed` (feature-detect gate).
@@ -623,22 +623,6 @@ fun FullPlayerItem(
             val isSpokenContent = currentQueueItem?.track is Audiobook ||
                     currentQueueItem?.track is PodcastEpisode
             val showSpeed = isSpokenContent && playbackSpeed != null && !poweredOff
-
-            if (showChainDialog && currentQueueItem != null) {
-                AudioChainDialog(
-                    queueTrack = currentQueueItem,
-                    player = item,
-                    onDismissRequest = { showChainDialog = false },
-                )
-            }
-
-            if (showSpeedDialog && playbackSpeed != null) {
-                PlaybackSpeedDialog(
-                    currentSpeed = playbackSpeed,
-                    onConfirm = { playerAction(item, PlayerAction.SetPlaybackSpeed(it)) },
-                    onDismissRequest = { showSpeedDialog = false },
-                )
-            }
 
             CenteredThreeSlotRow(
                 modifier = Modifier.fillMaxWidth(),
@@ -657,7 +641,7 @@ fun FullPlayerItem(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(6.dp))
                                 .background(colors.controlTint)
-                                .clickable { showSpeedDialog = true }
+                                .clickable(onClick = onPlaybackSpeedClick)
                                 .padding(horizontal = 8.dp, vertical = 2.dp),
                         ) {
                             Text(
@@ -683,7 +667,7 @@ fun FullPlayerItem(
                                         colors.controlTint
                                     },
                                 )
-                                .clickable(enabled = tier != null) { showChainDialog = true }
+                                .clickable(enabled = tier != null, onClick = onAudioChainClick)
                                 .padding(horizontal = 8.dp, vertical = 2.dp),
                         ) {
                             Text(
@@ -791,6 +775,19 @@ fun FullPlayerItem(
 private val FULL_PLAYER_HORIZONTAL_PADDING = 16.dp
 
 private val previewPoweredOffColors = PlayerColors(dominant = Color.DarkGray, controlTint = Color.White)
+
+/**
+ * The line that replaces the track title while the player renders nothing, or null while it
+ * plays. [Player.isPoweredOff] covers both a switched-off device and one the server cannot
+ * reach any more, so the two are told apart here to word the label correctly.
+ */
+@Composable
+private fun Player.dormantLabel(): String? = when {
+    needsSetup -> stringResource(Res.string.player_needs_setup)
+    !isAvailable -> stringResource(Res.string.player_standby)
+    isPoweredOff -> stringResource(Res.string.player_powered_off)
+    else -> null
+}
 
 @Preview
 @Composable

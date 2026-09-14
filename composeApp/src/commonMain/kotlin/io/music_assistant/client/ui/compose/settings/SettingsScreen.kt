@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -13,6 +15,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -70,7 +73,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import io.music_assistant.client.api.ConnectionInfo
 import io.music_assistant.client.api.Defaults
-import io.music_assistant.client.auth.ServerIdMismatchException
 import io.music_assistant.client.data.model.server.ServerInfo
 import io.music_assistant.client.data.model.server.User
 import io.music_assistant.client.player.sendspin.SendspinConfig
@@ -93,6 +95,7 @@ import io.music_assistant.client.ui.compose.nav.TopBarLayout
 import io.music_assistant.client.ui.theme.ThemeSetting
 import io.music_assistant.client.ui.theme.ThemeViewModel
 import io.music_assistant.client.utils.DataConnectionState
+import io.music_assistant.client.utils.LocalNetworkOnboardingResources
 import io.music_assistant.client.utils.SessionState
 import io.music_assistant.client.utils.hasCamera
 import io.music_assistant.client.utils.isIpPort
@@ -110,6 +113,7 @@ import musicassistantclient.composeapp.generated.resources.cd_select_codec
 import musicassistantclient.composeapp.generated.resources.common_back
 import musicassistantclient.composeapp.generated.resources.common_cancel
 import musicassistantclient.composeapp.generated.resources.common_delete
+import musicassistantclient.composeapp.generated.resources.common_done
 import musicassistantclient.composeapp.generated.resources.connection_error_generic
 import musicassistantclient.composeapp.generated.resources.connection_error_lost
 import musicassistantclient.composeapp.generated.resources.connection_error_timeout
@@ -117,7 +121,6 @@ import musicassistantclient.composeapp.generated.resources.connection_error_tls
 import musicassistantclient.composeapp.generated.resources.connection_error_unreachable
 import musicassistantclient.composeapp.generated.resources.connection_error_webrtc
 import musicassistantclient.composeapp.generated.resources.nav_settings
-import musicassistantclient.composeapp.generated.resources.server_id_mismatch_error
 import musicassistantclient.composeapp.generated.resources.settings_about_description
 import musicassistantclient.composeapp.generated.resources.settings_about_learn_more
 import musicassistantclient.composeapp.generated.resources.settings_allow_landscape
@@ -128,7 +131,6 @@ import musicassistantclient.composeapp.generated.resources.settings_connect
 import musicassistantclient.composeapp.generated.resources.settings_connect_saved
 import musicassistantclient.composeapp.generated.resources.settings_connect_webrtc
 import musicassistantclient.composeapp.generated.resources.settings_connected
-import musicassistantclient.composeapp.generated.resources.settings_connected_to
 import musicassistantclient.composeapp.generated.resources.settings_connected_webrtc
 import musicassistantclient.composeapp.generated.resources.settings_connecting
 import musicassistantclient.composeapp.generated.resources.settings_connecting_remote
@@ -202,6 +204,10 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
     val hasCrashLog by viewModel.hasCrashLog.collectAsStateWithLifecycle()
     val isPreparingShare by viewModel.isPreparingShare.collectAsStateWithLifecycle()
     val preferredMethod by viewModel.preferredConnectionMethod.collectAsStateWithLifecycle()
+    val localNetworkOnboardingShown by viewModel.localNetworkOnboardingShown
+        .collectAsStateWithLifecycle()
+    val localNetworkBlocked by viewModel.localNetworkBlocked.collectAsStateWithLifecycle()
+    val probeGranted by viewModel.lastLocalNetworkProbeGranted.collectAsStateWithLifecycle()
 
     // Android TV: Compose's geometric focus search does not reliably move focus between siblings
     // on this hardware, so the initial-config form and the connected screen declare explicit
@@ -328,8 +334,8 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                     .then(if (isTv) Modifier else Modifier.verticalScroll(rememberScrollState())),
                 verticalArrangement = Arrangement.spacedBy(if (isTv) 8.dp else 16.dp),
             ) {
-                var ipAddress by remember { mutableStateOf(if (isTv) "" else Defaults.URI) }
-                var port by remember { mutableStateOf(if (isTv) "" else Defaults.PORT.toString()) }
+                var ipAddress by remember { mutableStateOf("") }
+                var port by remember { mutableStateOf(Defaults.PORT.toString()) }
                 var isTls by remember { mutableStateOf(false) }
                 var basePath by remember { mutableStateOf("") }
 
@@ -343,37 +349,46 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                 }
 
                 // Track if we've already attempted auto-reconnect
+                // Sticky for the screen's lifetime: once the iOS permission is determined,
+                // retries no longer wait on the prompt, so suppressing repeats is intended.
                 var autoReconnectAttempted by remember { mutableStateOf(false) }
 
                 // Auto-reconnect on error ONLY if user hasn't changed the connection info
                 // This prevents auto-reconnect to old server when user is trying to connect to new server
                 // Does NOT auto-reconnect when user is using WebRTC (different failure mode)
                 LaunchedEffect(sessionState) {
+                    val errorState = sessionState as? SessionState.Disconnected.Error
                     val connInfo = savedConnectionInfo
-                    if (sessionState is SessionState.Disconnected.Error &&
-                        connInfo != null &&
+                    if (errorState != null &&
                         !autoReconnectAttempted &&
                         preferredMethod != "webrtc"
                     ) {
-                        // Only auto-reconnect if text fields match saved connection info
-                        // (i.e., user hasn't changed anything)
-                        val userChangedConnectionInfo =
-                            ipAddress != connInfo.host ||
-                                    port != connInfo.port.toString() ||
-                                    isTls != connInfo.isTls ||
-                                    basePath != connInfo.basePath
+                        if (connInfo != null) {
+                            // Only auto-reconnect if text fields match saved connection info
+                            // (i.e., user hasn't changed anything)
+                            val userChangedConnectionInfo =
+                                ipAddress != connInfo.host ||
+                                        port != connInfo.port.toString() ||
+                                        isTls != connInfo.isTls ||
+                                        basePath != connInfo.basePath
 
-                        if (!userChangedConnectionInfo) {
-                            // User is trying to reconnect to same server - auto-retry
+                            if (!userChangedConnectionInfo) {
+                                // User is trying to reconnect to same server - auto-retry
+                                autoReconnectAttempted = true
+                                viewModel.attemptConnection(
+                                    connInfo.host,
+                                    connInfo.port.toString(),
+                                    connInfo.isTls,
+                                    connInfo.basePath,
+                                )
+                            }
+                            // If user changed connection info, don't auto-retry - let them manually retry
+                        } else if (errorState.reason?.let(viewModel::isLikelyLocalNetworkBlocked) == true) {
+                            // Fresh install (no saved connection): retry once — the first
+                            // attempt is consumed by the platform permission prompt.
                             autoReconnectAttempted = true
-                            viewModel.attemptConnection(
-                                connInfo.host,
-                                connInfo.port.toString(),
-                                connInfo.isTls,
-                                connInfo.basePath,
-                            )
+                            viewModel.attemptConnection(ipAddress, port, isTls, basePath)
                         }
-                        // If user changed connection info, don't auto-retry - let them manually retry
                     }
                 }
 
@@ -393,6 +408,9 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                     }
                 }
 
+                val connectAttemptInFlight by viewModel.connectAttemptInFlight
+                    .collectAsStateWithLifecycle()
+
                 when (sessionState) {
                     is SessionState.Disconnected -> {
                         // The settings form already needs every pixel of a 1080p TV screen
@@ -401,6 +419,12 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                         if (!isTv) {
                             AboutSection()
                         }
+                        LocalNetworkOnboardingCard(
+                            resources = viewModel.localNetworkOnboardingResources,
+                            visible = connectionHistory.isEmpty() &&
+                                !localNetworkOnboardingShown,
+                            onGotIt = viewModel::dismissLocalNetworkOnboarding,
+                        )
                         ConnectionMethodTabs(
                             viewModel = viewModel,
                             preferredMethod = preferredMethod,
@@ -416,23 +440,26 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                             onBasePathChange = { basePath = it },
                             onDirectConnect = {
                                 viewModel.attemptConnection(
-                                    ipAddress,
+                                    ipAddress.ifBlank { Defaults.URI },
                                     port,
                                     isTls,
                                     basePath,
                                 )
                             },
-                            directConnectEnabled = ipAddress.isValidHost() &&
+                            directConnectEnabled = ipAddress.ifBlank { Defaults.URI }.isValidHost() &&
                                     port.isIpPort() &&
-                                    basePath.isValidBasePath(),
+                                    basePath.isValidBasePath() &&
+                                    !connectAttemptInFlight,
                             sessionState = sessionState,
                             connectionHistory = connectionHistory,
+                            localNetworkBlocked = localNetworkBlocked,
+                            probeGranted = probeGranted,
                         )
                     }
 
                     SessionState.Connecting -> {
                         ConnectingSection(
-                            ipAddress = ipAddress,
+                            ipAddress = ipAddress.ifBlank { Defaults.URI },
                             port = port,
                             preferredMethod = preferredMethod,
                             onCancel = { viewModel.disconnect() },
@@ -441,7 +468,7 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
 
                     is SessionState.Reconnecting -> {
                         ConnectingSection(
-                            ipAddress = ipAddress,
+                            ipAddress = ipAddress.ifBlank { Defaults.URI },
                             port = port,
                             preferredMethod = preferredMethod,
                             onCancel = { viewModel.disconnect() },
@@ -647,11 +674,33 @@ private fun AboutSection() {
 }
 
 @Composable
+private fun LocalNetworkOnboardingCard(
+    resources: LocalNetworkOnboardingResources?,
+    visible: Boolean,
+    onGotIt: () -> Unit,
+) {
+    if (!visible || resources == null) return
+    SectionCard {
+        SectionTitle(stringResource(resources.title))
+        Text(
+            text = stringResource(resources.body),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.size(12.dp))
+        OutlinedButton(onClick = onGotIt, modifier = Modifier.fillMaxWidth()) {
+            Text(stringResource(Res.string.common_done))
+        }
+    }
+}
+
+@Composable
 private fun ExperimentalPill() {
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
             .background(MaterialTheme.colorScheme.primary)
+            .wrapContentWidth(unbounded = true)
             .padding(horizontal = 6.dp, vertical = 1.dp),
     ) {
         Text(
@@ -659,10 +708,13 @@ private fun ExperimentalPill() {
             style = MaterialTheme.typography.labelSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimary,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun ConnectionMethodTabs(
     viewModel: SettingsViewModel,
@@ -681,13 +733,22 @@ private fun ConnectionMethodTabs(
     directConnectEnabled: Boolean,
     sessionState: SessionState,
     connectionHistory: List<ConnectionHistoryEntry>,
+    localNetworkBlocked: Boolean,
+    probeGranted: Boolean?,
 ) {
     val selectedTab = if (preferredMethod == "webrtc") 1 else 0
     val webrtcRemoteId by viewModel.webrtcRemoteId.collectAsStateWithLifecycle()
     var showHistoryDialog by remember { mutableStateOf(false) }
 
     val directHasToken = port.toIntOrNull()
-        ?.let { viewModel.hasCredentialsForDirect(ipAddress, it, isTls, basePath) } ?: false
+        ?.let {
+            viewModel.hasCredentialsForDirect(
+                ipAddress.ifBlank { Defaults.URI },
+                it,
+                isTls,
+                basePath,
+            )
+        } ?: false
     val webrtcHasToken = webrtcRemoteId.isNotBlank() &&
             viewModel.hasCredentialsForWebRTC(webrtcRemoteId)
 
@@ -715,9 +776,13 @@ private fun ConnectionMethodTabs(
                     .tvFocusRing()
                     .testTag("Config-TabWebRTC"),
                 text = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+                    FlowRow(
+                        horizontalArrangement = Arrangement.Center,
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically,
+                        maxItemsInEachRow = 1,
+                    ) {
                         Text(stringResource(Res.string.settings_connection_webrtc))
-                        Spacer(modifier = Modifier.size(6.dp))
                         ExperimentalPill()
                     }
                 },
@@ -764,20 +829,23 @@ private fun ConnectionMethodTabs(
         }
 
         val error = (sessionState as? SessionState.Disconnected.Error)?.reason
-        if (error != null) {
-            val errorMessage = when {
-                error is ServerIdMismatchException -> Res.string.server_id_mismatch_error.toDisplayString()
-                isTelevisionDevice() -> friendlyConnectionError(error)
-                else -> error.message?.toDisplayString()
-            }
+        val errorMessage = viewModel.localNetworkErrorGuidance(
+            error = error,
+            probeGranted = probeGranted,
+            locallyBlocked = localNetworkBlocked,
+        )?.toDisplayString() ?: when {
+            error == null -> null
+            error is ServerIdMismatchException -> Res.string.server_id_mismatch_error.toDisplayString()
+            isTelevisionDevice() -> friendlyConnectionError(error)
+            else -> error.message?.toDisplayString()
+        }
 
-            if (errorMessage != null) {
-                Text(
-                    errorMessage.string(),
-                    modifier = Modifier.padding(top = 8.dp),
-                    color = MaterialTheme.colorScheme.error,
-                )
-            }
+        if (errorMessage != null) {
+            Text(
+                errorMessage.string(),
+                modifier = Modifier.padding(top = 8.dp),
+                color = MaterialTheme.colorScheme.error,
+            )
         }
     }
 
@@ -961,7 +1029,12 @@ fun DirectConnectionContent(
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = 12.dp),
-        text = ConnectionInfo.previewWsUrl(ipAddress, port, isTls, basePath),
+        text = ConnectionInfo.previewWsUrl(
+            ipAddress.ifBlank { Defaults.URI },
+            port,
+            isTls,
+            basePath,
+        ),
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
@@ -1249,13 +1322,28 @@ private fun ServerInfoSection(
     SectionCard {
         SectionTitle(stringResource(Res.string.settings_server))
 
+        // Older servers send no name, so the address line stays the headline for them.
+        serverInfo?.name?.takeIf { it.isNotBlank() }?.let { name ->
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(bottom = 2.dp),
+            )
+        }
+
         val connectionText = if (isWebRTC) {
             stringResource(Res.string.settings_connected_webrtc)
         } else {
-            connectionInfo?.let {
-                stringResource(Res.string.settings_connected_to, it.host, it.port, it.basePath)
-            }
+            connectionInfo?.let { "${it.host}:${it.port}${it.basePath}" }
         }
+        val externalUrl = serverInfo?.externalUrl
+            ?.takeIf {
+                it.isNotBlank() &&
+                        connectionInfo?.host?.let { host -> !it.contains(host) } ?: true
+            }
         connectionText?.let { text ->
             if (isTelevisionDevice()) {
                 // TV: no scrolling, so condense the status card to a single row and leave the
@@ -1281,10 +1369,20 @@ private fun ServerInfoSection(
             } else {
                 Text(
                     text = text,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onBackground,
-                    modifier = Modifier.padding(bottom = 8.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(bottom = if (externalUrl != null) 2.dp else 8.dp),
                 )
+                externalUrl?.let {
+                    Text(
+                        text = it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
 
                 serverInfo?.let { server ->
                     Text(
@@ -1686,18 +1784,32 @@ private fun ConnectionHistoryDialog(
                                     .padding(start = 12.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
                             ) {
                                 Text(
-                                    text = entry.displayAddress,
+                                    text = entry.serverName ?: entry.displayAddress,
                                     style = MaterialTheme.typography.bodyLarge,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
+                                // Only when a name took the primary line, or this repeats it.
+                                entry.serverName?.let {
+                                    Text(
+                                        text = entry.displayAddress,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                val typeLabel = when (entry.type) {
+                                    ConnectionType.DIRECT -> stringResource(Res.string.settings_history_direct)
+                                    ConnectionType.WEBRTC -> stringResource(Res.string.settings_history_webrtc)
+                                }
                                 Text(
-                                    text = when (entry.type) {
-                                        ConnectionType.DIRECT -> stringResource(Res.string.settings_history_direct)
-                                        ConnectionType.WEBRTC -> stringResource(Res.string.settings_history_webrtc)
-                                    },
+                                    text = entry.shortServerId
+                                        ?.let { "$typeLabel \u00B7 $it" } ?: typeLabel,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
                                 )
                             }
                             IconButton(onClick = { onDelete(entry) }) {

@@ -23,6 +23,7 @@ import io.music_assistant.client.data.model.client.items.Genre
 import io.music_assistant.client.data.model.client.items.Playlist
 import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.settings.ViewMode
+import io.music_assistant.client.ui.compose.common.MenuItem
 import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
 import io.music_assistant.client.ui.compose.common.tvFocusRing
 
@@ -31,6 +32,8 @@ fun AlbumWithMenu(
     item: Album,
     viewMode: ViewMode = ViewMode.GRID,
     onNavigateClick: (Album) -> Unit,
+    navigateToItem: (AppMediaItem) -> Unit,
+    containerItem: AppMediaItem? = null,
     onPlayOption: PlayHandler<Album>,
     playlistActions: PlaylistActions? = null,
     libraryActions: LibraryActions,
@@ -44,6 +47,8 @@ fun AlbumWithMenu(
         },
         item = item,
         onNavigateClick = onNavigateClick,
+        navigateToItem = navigateToItem,
+        containerItem = containerItem,
         onPlayOption = onPlayOption,
         playlistActions = playlistActions,
         libraryActions = libraryActions,
@@ -277,6 +282,8 @@ private fun <T : AppMediaItem> BrowsableItemWithMenu(
     modifier: Modifier = Modifier,
     item: T,
     onNavigateClick: (T) -> Unit,
+    navigateToItem: ((AppMediaItem) -> Unit)? = null,
+    containerItem: AppMediaItem? = null,
     onPlayOption: PlayHandler<T>,
     playlistActions: PlaylistActions? = null,
     libraryActions: LibraryActions,
@@ -306,6 +313,11 @@ private fun <T : AppMediaItem> BrowsableItemWithMenu(
         customizationAllowed = false,
     )
 
+    // Built outside the DropdownMenu so the multi-artist chooser dialog survives its dismissal.
+    val navOptions = navigateToItem
+        ?.let { item.navigationOptions(it, containerItem) }
+        ?: emptyList()
+
     // Android TV: this wrapper Box isn't itself the focusable node -- the real clickable target
     // is built several layers down by itemComposable (a different composable per media type/view
     // mode) -- so tvFocusRing needs trackDescendants to see focus land on any of them.
@@ -333,7 +345,7 @@ private fun <T : AppMediaItem> BrowsableItemWithMenu(
                 expandedItemId = null
                 when (action) {
                     is ItemAction.Play -> onPlayOption(item, action.queueOption, false, false)
-                    ItemAction.StartRadio -> onPlayOption(item, QueueOption.REPLACE, true, false)
+                    ItemAction.StartEndlessMix -> onPlayOption(item, QueueOption.REPLACE, true, false)
                     ItemAction.AddToLibrary -> libraryActions.onLibraryClick(item)
                     ItemAction.RemoveFromLibrary -> showRemoveConfirmation = true
                     ItemAction.Favorite,
@@ -348,6 +360,7 @@ private fun <T : AppMediaItem> BrowsableItemWithMenu(
                     else -> Unit
                 }
             }
+            navOptions.forEach { it.MenuItem(onClose = { expandedItemId = null }) }
         }
 
         if (showPlaylistDialog && playlistActions != null) {

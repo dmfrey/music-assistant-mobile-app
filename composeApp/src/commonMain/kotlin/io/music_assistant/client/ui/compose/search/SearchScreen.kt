@@ -370,6 +370,7 @@ private fun SearchContent(
                                     is Track -> TrackWithMenu(
                                         viewMode = ViewMode.LIST,
                                         item = item,
+                                        navigateToItem = onItemClick,
                                         onPlayOption = onPlayClick,
                                         libraryActions = libraryActions,
                                         providerIconFetcher = providerIconFetcher,
@@ -390,6 +391,7 @@ private fun SearchContent(
                                         viewMode = ViewMode.LIST,
                                         item = item,
                                         onNavigateClick = onItemClick,
+                                        navigateToItem = onItemClick,
                                         onPlayOption = onPlayClick,
                                         playlistActions = playlistActions,
                                         libraryActions = libraryActions,

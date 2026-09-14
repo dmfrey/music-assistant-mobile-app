@@ -47,6 +47,9 @@ class LibraryListViewModel(
         State(
             dataState = DataState.Loading(),
             mediaType = mediaType,
+            // This VM is recreated on every tab re-enter, so the persisted sort is
+            // what makes the choice survive leaving the screen.
+            sortOption = settingsRepository.getSortOption(mediaType),
         ),
     )
     val state = _state.asStateFlow()
@@ -215,6 +218,7 @@ class LibraryListViewModel(
     }
 
     fun onSortChanged(sortOption: SortOption) {
+        settingsRepository.setSortOption(mediaType, sortOption)
         _state.update { it.copy(sortOption = sortOption) }
         searchTrigger.tryEmit(Unit)
     }
@@ -394,7 +398,7 @@ class LibraryListViewModel(
                         media = listOf(mediaUri),
                         queueOrPlayerId = queueId,
                         option = option,
-                        radioMode = radio && item !is Genre,
+                        endlessMixMode = radio && item !is Genre,
                     ),
                 )
             }

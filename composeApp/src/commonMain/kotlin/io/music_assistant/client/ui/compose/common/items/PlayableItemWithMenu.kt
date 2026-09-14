@@ -26,6 +26,7 @@ import io.music_assistant.client.data.model.client.items.RadioStation
 import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.ConfirmationDialog
+import io.music_assistant.client.ui.compose.common.MenuItem
 import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
 import io.music_assistant.client.ui.compose.common.tvFocusRing
 import musicassistantclient.composeapp.generated.resources.Res
@@ -41,6 +42,8 @@ fun TrackWithMenu(
     item: Track,
     viewMode: ViewMode = ViewMode.GRID,
     showTrackNumber: Boolean = false,
+    navigateToItem: (AppMediaItem) -> Unit,
+    containerItem: AppMediaItem? = null,
     onPlayOption: PlayHandler<Track>,
     playlistActions: PlaylistActions? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
@@ -54,6 +57,8 @@ fun TrackWithMenu(
             ViewMode.LIST -> Modifier.fillMaxWidth()
         },
         item = item,
+        navigateToItem = navigateToItem,
+        containerItem = containerItem,
         onPlayOption = onPlayOption,
         playlistActions = playlistActions,
         onRemoveFromPlaylist = onRemoveFromPlaylist,
@@ -177,6 +182,8 @@ fun RadioWithMenu(
 private fun <T> PlayableItemWithMenu(
     modifier: Modifier = Modifier,
     item: T,
+    navigateToItem: ((AppMediaItem) -> Unit)? = null,
+    containerItem: AppMediaItem? = null,
     onPlayOption: PlayHandler<T>,
     playlistActions: PlaylistActions? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
@@ -214,10 +221,15 @@ private fun <T> PlayableItemWithMenu(
         customizationAllowed = true,
     )
 
+    // Built outside the DropdownMenu so the multi-artist chooser dialog survives its dismissal.
+    val navOptions = navigateToItem
+        ?.let { item.navigationOptions(it, containerItem) }
+        ?: emptyList()
+
     val runPlayAction: (ItemAction) -> Unit = { action ->
         when (action) {
             is ItemAction.Play -> onPlayOption(item, action.queueOption, false, false)
-            ItemAction.StartRadio -> onPlayOption(item, QueueOption.REPLACE, true, false)
+            ItemAction.StartEndlessMix -> onPlayOption(item, QueueOption.REPLACE, true, false)
             is ItemAction.PlayFromHere -> onPlayOption(item, QueueOption.REPLACE, false, true)
             else -> Unit
         }
@@ -254,7 +266,7 @@ private fun <T> PlayableItemWithMenu(
                 expandedItemId = null
                 when (action) {
                     is ItemAction.Play,
-                    ItemAction.StartRadio,
+                    ItemAction.StartEndlessMix,
                     is ItemAction.PlayFromHere,
                     -> runPlayAction(action)
                     ItemAction.AddToLibrary -> libraryActions.onLibraryClick(item)
@@ -271,6 +283,7 @@ private fun <T> PlayableItemWithMenu(
                     ItemAction.Customize -> showCustomizeDialog = true
                 }
             }
+            navOptions.forEach { it.MenuItem(onClose = { expandedItemId = null }) }
         }
 
         if (showPlaylistDialog && playlistActions != null) {

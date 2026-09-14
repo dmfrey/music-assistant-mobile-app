@@ -11,6 +11,10 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
 
     var interfaceController: CPInterfaceController?
 
+    /// All template-stack mutations go through this serialized coordinator.
+    /// Recreated per CarPlay connection so old callbacks cannot mutate a new session.
+    private var navigationCoordinator: CarPlayNavigationCoordinator<CarPlayInterfaceControllerNavigationDriver>?
+
     // MARK: - Readiness state
     //
     // `isReady` mirrors `serviceClient.isReadyForCommands` so synchronous
@@ -75,16 +79,21 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private var recommendationsFetchGen: Int = 0
 
     /// Shared completion handler for CarPlay template operations.
-    private let logTemplateError: (Bool, Error?) -> Void = { _, error in
+    private let logTemplateError: (Bool, Error?) -> Void = { success, error in
         if let error = error {
             os_log("CP: template error: %{public}@",
                    log: cpLog, type: .error, "\(error)")
+        } else if !success {
+            os_log("CP: template navigation failed or was blocked by the depth guard",
+                   log: cpLog, type: .error)
         }
     }
 
     // MARK: - CPTemplateApplicationSceneDelegate
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didConnect interfaceController: CPInterfaceController) {
+        navigationCoordinator?.invalidateSession()
+        navigationCoordinator = nil
         self.interfaceController = interfaceController
         os_log("CP: didConnect", log: cpLog, type: .default)
         // Reset per-session state for a clean reconnect.
@@ -99,6 +108,15 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
             self.interfaceController = nil
             return
         }
+
+        let driver = CarPlayInterfaceControllerNavigationDriver(interfaceController: interfaceController)
+        navigationCoordinator = CarPlayNavigationCoordinator(
+            driver: driver,
+            onFailure: { [weak self] error in
+                self?.logTemplateError(false, error)
+            }
+        )
+        navigationCoordinator?.startSession()
         didAttachExternalConsumer = true
         KmpHelper.shared.onExternalConsumerActive()
         // Rehydrate Now Playing from the server; attaching alone never authorizes playback.
@@ -125,8 +143,10 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     }
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene, didDisconnectInterfaceController interfaceController: CPInterfaceController) {
-        // Invalidate any in-flight didConnect completions for this connection.
+        // Invalidate any in-flight didConnect and navigation completions for this connection.
         connectionGen += 1
+        navigationCoordinator?.invalidateSession()
+        navigationCoordinator = nil
         // Cancel subscriptions before tearing down state to avoid the
         // callbacks racing with a nil interfaceController.
         readinessSubscription?.cancel()
@@ -325,7 +345,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private func setupTemplates() {
         guard let strings = strings else { return }
         let libraryTemplate = createLibraryTemplate(strings)
-        interfaceController?.setRootTemplate(libraryTemplate, animated: true, completion: logTemplateError)
+        navigationCoordinator?.setRootTemplate(libraryTemplate, animated: true)
     }
 
     // MARK: - UI Construction
@@ -518,34 +538,15 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
 
     // MARK: - Navigation Helpers
 
-    /// Centralize template pushes to keep track of how many we have and not go
-    /// over five, a hard-coded CarPlay limit
+    /// Centralize template pushes. The coordinator serializes mutations,
+    /// enforces the CarPlay depth limit, and reuses singleton templates.
     private func safePushTemplate(_ template: CPTemplate, animated: Bool) {
-        guard let interfaceController = interfaceController else { return }
-        if interfaceController.templates.count >= 5 {
-            interfaceController.popToRootTemplate(animated: false) { [weak interfaceController] _, _ in
-                interfaceController?.pushTemplate(template, animated: animated, completion: self.logTemplateError)
-            }
-            return
-        }
-        interfaceController.pushTemplate(template, animated: animated, completion: logTemplateError)
+        navigationCoordinator?.pushTemplate(template, animated: animated)
     }
 
-    /// Safely navigate to the singleton `CPNowPlayingTemplate`
+    /// Safely navigate to the singleton `CPNowPlayingTemplate`.
     private func pushNowPlayingTemplate(animated: Bool) {
-        guard let interfaceController = interfaceController else { return }
-        if interfaceController.topTemplate === CPNowPlayingTemplate.shared {
-            return
-        }
-        if interfaceController.templates.contains(where: { $0 === CPNowPlayingTemplate.shared }) {
-            interfaceController.pop(
-                to: CPNowPlayingTemplate.shared,
-                animated: animated,
-                completion: logTemplateError
-            )
-            return
-        }
-        safePushTemplate(CPNowPlayingTemplate.shared, animated: animated)
+        navigationCoordinator?.showSingletonTemplate(CPNowPlayingTemplate.shared, animated: animated)
     }
 
     private func pushBrowseGrid() {
@@ -570,11 +571,20 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         ]
 
         // Apply the user's Car Tabs ordering and visibility (Settings → Car → Tabs).
-        // Falls back to the full default set when no config is stored.
+        // Falls back to the full default set when no config is stored. AI_RADIO is absent
+        // from that list unless its plugin is loaded and the user holds its scope.
         let configuredNames = manager.carBrowseCategories()
-        let categories: [CategoryEntry] = configuredNames.compactMap { allCategories[$0] }
 
-        let buttons = categories.map { category -> CPGridButton in
+        let buttons: [CPGridButton] = configuredNames.compactMap { name in
+            // AI Radio is not in allCategories: its rows are plugin stations, not AppMediaItem,
+            // so attachHandlers would drop every tap. It gets its own template instead.
+            if name == "AI_RADIO" {
+                let image = Self.dynamicCategoryImage(symbol: "sparkles", size: imageSize)
+                return CPGridButton(titleVariants: [strings.aiRadio], image: image) { [weak self] _ in
+                    self?.pushAiRadioTemplate()
+                }
+            }
+            guard let category = allCategories[name] else { return nil }
             let image = Self.dynamicCategoryImage(symbol: category.symbol, size: imageSize)
             return CPGridButton(titleVariants: [category.title], image: image) { [weak self] _ in
                 self?.pushCategoryTemplate(title: category.title, fetcher: category.fetcher)
@@ -582,6 +592,42 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         }
         let gridTemplate = CPGridTemplate(title: strings.browse, gridButtons: buttons)
         self.safePushTemplate(gridTemplate, animated: true)
+    }
+
+    /// Stations of the optional `ai_radio` plugin. Mirrors `pushCategoryTemplate`, but each row
+    /// carries its own handler because a station is not an `AppMediaItem`.
+    private func pushAiRadioTemplate() {
+        guard isReady else { showOfflineAlert(); return }
+        guard let strings = strings else { return }
+        let template = CPListTemplate(title: strings.aiRadio, sections: [])
+        template.updateSections([CPListSection(items: [CPListItem(text: strings.loading, detailText: nil)])])
+
+        self.safePushTemplate(template, animated: true)
+
+        CarPlayContentManager.shared.fetchAiRadioStations { [weak self] stations in
+            guard let self = self else { return }
+            guard let stations = stations else {
+                template.updateSections([CPListSection(items: [self.disconnectedRow(strings)])])
+                return
+            }
+            if stations.isEmpty {
+                template.updateSections([self.emptyStateSection(text: strings.aiRadioEmpty)])
+                return
+            }
+            let items = stations.map { station -> CPListItem in
+                let item = CPListItem(text: station.name, detailText: nil)
+                item.handler = { [weak self] _, completion in
+                    guard let self = self else { completion(); return }
+                    guard self.isReady else { self.showOfflineAlert(); completion(); return }
+                    if CarPlayContentManager.shared.startAiRadio(station.id) {
+                        self.pushNowPlayingTemplate(animated: true)
+                    }
+                    completion()
+                }
+                return item
+            }
+            template.updateSections([CPListSection(items: items)])
+        }
     }
 
     /// Mirrors `pushDrilldown`'s shape but targets the simpler
@@ -758,7 +804,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
     private static func actionStartsPlayback(_ name: String) -> Bool {
         switch name {
         case "ADD_TO_QUEUE", "INSERT_NEXT": return false
-        default: return true // PLAY_NOW, INSERT_NEXT_AND_PLAY, START_RADIO
+        default: return true // PLAY_NOW, INSERT_NEXT_AND_PLAY, START_ENDLESS_MIX
         }
     }
 
@@ -767,7 +813,7 @@ class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegate {
         case "ADD_TO_QUEUE": return "text.badge.plus"
         case "INSERT_NEXT": return "text.insert"
         case "INSERT_NEXT_AND_PLAY": return "play.circle"
-        case "START_RADIO": return "dot.radiowaves.left.and.right"
+        case "START_ENDLESS_MIX": return "dot.radiowaves.left.and.right"
         default: return "play.fill" // PLAY_NOW
         }
     }

@@ -31,6 +31,7 @@ import musicassistantclient.composeapp.generated.resources.cd_current_player
 import musicassistantclient.composeapp.generated.resources.cd_filter
 import musicassistantclient.composeapp.generated.resources.cd_playing
 import musicassistantclient.composeapp.generated.resources.common_apply
+import musicassistantclient.composeapp.generated.resources.common_back
 import musicassistantclient.composeapp.generated.resources.library_empty
 import musicassistantclient.composeapp.generated.resources.nav_home
 import musicassistantclient.composeapp.generated.resources.nav_library
@@ -56,6 +57,22 @@ fun <T : ComposePage> T.clickItemOption(serverMediaItem: ServerMediaItem, action
     composeTestRule.onNode(mediaItemMatcher(serverMediaItem)).performTouchInput { longClick() }
     composeTestRule.onNodeWithText(action).performClick()
     return this
+}
+
+/** Long-clicks [serverMediaItem], picks the [action] navigation entry, and lands on [target]. */
+fun ComposePage.clickItemNavigationOption(
+    serverMediaItem: ServerMediaItem,
+    action: String,
+    target: ServerMediaItem,
+    navigationItem: String,
+    withinTag: String? = null,
+): ItemPage {
+    composeTestRule.onNode(mediaItemMatcher(serverMediaItem, withinTag))
+        .performTouchInput { longClick() }
+    composeTestRule.onNodeWithText(action).performClick()
+
+    val type = MediaType.fromServer(target.mediaType) ?: MediaType.UNKNOWN
+    return ItemPage(target.name, type, navigationItem, composeTestRule).assertOnPage()
 }
 
 fun ComposePage.assertNavBar(items: List<String>, selected: String) {
@@ -218,6 +235,11 @@ fun <T : ComposePage> T.enableFilter(action: (FilterSheetPage) -> Unit): T {
 fun <T : ComposePage> T.assertNoItems(): T {
     composeTestRule.onNodeWithText(Res.string.library_empty.get()).assertIsDisplayed()
     return this
+}
+
+fun <T : ComposePage, U : Page> T.clickBack(destination: U): U {
+    composeTestRule.onNodeWithContentDescription(Res.string.common_back.get()).performClick()
+    return destination.assertOnPage()
 }
 
 private fun mediaItemMatcher(

@@ -80,7 +80,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.window.core.layout.WindowSizeClass
 import io.music_assistant.client.data.model.client.AppMediaItemFixtures
-import io.music_assistant.client.data.model.client.Lyrics
 import io.music_assistant.client.data.model.client.PlayerData
 import io.music_assistant.client.data.model.client.PlayerDataFixtures
 import io.music_assistant.client.data.model.client.PlayerDataFixtures.toQueue
@@ -88,6 +87,7 @@ import io.music_assistant.client.data.model.client.PlayerDataFixtures.toQueueTra
 import io.music_assistant.client.data.model.client.chapterSeekSeconds
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.model.client.lyrics
 import io.music_assistant.client.player.sendspin.SendspinState
 import io.music_assistant.client.ui.alphaOn
 import io.music_assistant.client.ui.compose.common.CenteredThreeSlotRow
@@ -103,11 +103,8 @@ import io.music_assistant.client.ui.compose.common.action.PlayerAction
 import io.music_assistant.client.ui.compose.common.action.QueueAction
 import io.music_assistant.client.ui.compose.common.bufferIndicatorMenuOption
 import io.music_assistant.client.ui.compose.common.dynamicColorsMenuOption
-import io.music_assistant.client.ui.compose.common.icons.CrossfadeIcon
 import io.music_assistant.client.ui.compose.common.icons.VolumeIcon
 import io.music_assistant.client.ui.compose.common.icons.VolumeMutedIcon
-import io.music_assistant.client.ui.compose.common.items.AddToPlaylistDialog
-import io.music_assistant.client.ui.compose.common.items.PlaylistActions
 import io.music_assistant.client.ui.compose.common.items.navigationOptions
 import io.music_assistant.client.ui.compose.common.rememberAnimatedPlayerColors
 import io.music_assistant.client.ui.compose.common.rememberDynamicColorsEnabled
@@ -120,7 +117,6 @@ import io.music_assistant.client.ui.compose.home.HomeScreenViewModel
 import io.music_assistant.client.ui.compose.home.HorizontalPagerIndicator
 import io.music_assistant.client.ui.compose.home.Queue
 import io.music_assistant.client.ui.inactive
-import io.music_assistant.client.utils.LrcParser
 import io.music_assistant.client.utils.WindowClass
 import io.music_assistant.client.utils.conditional
 import kotlinx.coroutines.delay
@@ -136,15 +132,10 @@ import musicassistantclient.composeapp.generated.resources.cd_mute
 import musicassistantclient.composeapp.generated.resources.cd_unmute
 import musicassistantclient.composeapp.generated.resources.player_power_off
 import musicassistantclient.composeapp.generated.resources.player_power_on
-import musicassistantclient.composeapp.generated.resources.player_sleep_timer
 import musicassistantclient.composeapp.generated.resources.players_dsp_settings
 import musicassistantclient.composeapp.generated.resources.players_loading
 import musicassistantclient.composeapp.generated.resources.players_none_available
-import musicassistantclient.composeapp.generated.resources.queue_autoplay_disable
-import musicassistantclient.composeapp.generated.resources.queue_autoplay_enable
 import musicassistantclient.composeapp.generated.resources.queue_clear
-import musicassistantclient.composeapp.generated.resources.queue_crossfade_disable
-import musicassistantclient.composeapp.generated.resources.queue_crossfade_enable
 import musicassistantclient.composeapp.generated.resources.queue_no_other_players
 import musicassistantclient.composeapp.generated.resources.queue_transfer
 import org.jetbrains.compose.resources.stringResource
@@ -199,21 +190,22 @@ fun PlayersPager(
             }
         // Extract playerData list to ensure proper recomposition
         val playerDataList = state.playerData
-        // Select-player dialog is hoisted out of the pager so that reordering-induced
-        // pager scrolls don't tear down the dialog's composable.
-        var selectDialogPlayerId by remember<MutableState<String?>> { mutableStateOf(null) }
-        val selectDialogPlayer = selectDialogPlayerId?.let { id ->
-            playerDataList.firstOrNull { it.player.id == id }
-        }
-        if (selectDialogPlayer != null) {
-            SelectPlayerDialog(
-                selectedPlayer = selectDialogPlayer,
-                players = playerDataList,
-                onDismissRequest = { selectDialogPlayerId = null },
-                onMoveToPlayer = { moveToPlayer(it) },
-                onReorder = { homeScreenViewModel.onPlayersSortChanged(it) },
-            )
-        }
+        // Every player dialog lives outside the pager, so removing or reordering a page cannot
+        // tear down an open dialog while UIKit is cancelling its hover recognizers. The host
+        // resolves the request against the newest player data and clears it once the player or
+        // the track it names is gone.
+        var dialogRequest by remember { mutableStateOf<PlayerDialogRequest?>(null) }
+        PlayerDialogHost(
+            request = dialogRequest,
+            players = playerDataList,
+            homeScreenViewModel = homeScreenViewModel,
+            dspSettingsViewModel = dspSettingsViewModel,
+            playlistActions = actionsViewModel,
+            canLeaveGroup = leaderLeaveSupported,
+            onMoveToPlayer = moveToPlayer,
+            onDismiss = { dialogRequest = null },
+        )
+
         val playerColors = playerDataList.associateWith {
             val media = it.player.currentMedia
             rememberAnimatedPlayerColors(
@@ -245,46 +237,58 @@ fun PlayersPager(
                 key = { page -> playerDataList.getOrNull(page)?.player?.id ?: page },
             ) { page ->
                 val player = playerDataList.getOrNull(page) ?: return@HorizontalPager
-                var showGroupDialog by remember { mutableStateOf(false) }
-                var showDspDialog by remember { mutableStateOf(false) }
-                var showSleepTimerDialog by remember { mutableStateOf(false) }
-                val onSelectPlayer = { selectDialogPlayerId = player.player.id }
-                val onGroupButton = { showGroupDialog = true }
-                val onDspButton = { showDspDialog = true }
-                val onSleepTimerButton = { showSleepTimerDialog = true }
-                if (showGroupDialog) {
-                    GroupSettingsDialog(
-                        player = player,
-                        onDismissRequest = { showGroupDialog = false },
-                        groupAction = { playerId: String, action: PlayerAction ->
-                            homeScreenViewModel.playerAction(
-                                playerId,
-                                action,
-                            )
-                        },
-                        localPlayerId = homeScreenViewModel.localPlayerId,
-                        onAdjustPlaybackDelay = {
-                            homeScreenViewModel.adjustSendspinStaticDelayMs(it)
-                        },
-                        canLeaveGroup = leaderLeaveSupported,
-                    )
+                // Openers are memoized on the ids they capture: PlayerData is not stable, so an
+                // un-remembered lambda would be a new instance every pass and the page below
+                // would never skip recomposition.
+                val playerId = player.playerId
+                val currentQueueItem = player.queueInfo?.currentItem
+                val currentTrack = currentQueueItem?.track as? Track
+                val lyrics = currentTrack?.lyrics
+                val trackId = currentTrack?.itemId
+                val queueItemId = currentQueueItem?.id
+                val onSelectPlayer: () -> Unit = remember(playerId) {
+                    {
+                        dialogRequest = PlayerDialogRequest.Select(playerId)
+                    }
                 }
-                if (showDspDialog) {
-                    DspSettingsDialog(
-                        playerId = player.player.id,
-                        dspSettingsViewModel = dspSettingsViewModel,
-                        onDismissRequest = { showDspDialog = false },
-                    )
+                val onGroupButton: () -> Unit = remember(playerId) {
+                    {
+                        dialogRequest = PlayerDialogRequest.Group(playerId)
+                    }
                 }
-                if (showSleepTimerDialog) {
-                    SleepTimerDialog(
-                        expiresAtSec = player.player.sleepTimerExpiresAt,
-                        onSelect = {
-                            homeScreenViewModel.setSleepTimer(player.player.id, it)
-                        },
-                        onClear = { homeScreenViewModel.clearSleepTimer(player.player.id) },
-                        onDismissRequest = { showSleepTimerDialog = false },
-                    )
+                val onDspButton: () -> Unit = remember(playerId) {
+                    {
+                        dialogRequest = PlayerDialogRequest.Dsp(playerId)
+                    }
+                }
+                val onSleepTimerButton: () -> Unit = remember(playerId) {
+                    {
+                        dialogRequest = PlayerDialogRequest.SleepTimer(playerId)
+                    }
+                }
+                val onLyricsClick: () -> Unit = remember(playerId, trackId) {
+                    {
+                        trackId?.let { dialogRequest = PlayerDialogRequest.Lyrics(playerId, it) }
+                    }
+                }
+                val onAudioChainClick: () -> Unit = remember(playerId, queueItemId) {
+                    {
+                        queueItemId?.let {
+                            dialogRequest = PlayerDialogRequest.AudioChain(playerId, it)
+                        }
+                    }
+                }
+                val onPlaybackSpeedClick: () -> Unit = remember(playerId, queueItemId) {
+                    {
+                        queueItemId?.let {
+                            dialogRequest = PlayerDialogRequest.PlaybackSpeed(playerId, it)
+                        }
+                    }
+                }
+                val onAddToPlaylist: (AppMediaItem) -> Unit = remember(playerId) {
+                    {
+                        dialogRequest = PlayerDialogRequest.AddToPlaylist(playerId, it)
+                    }
                 }
 
                 val colors by playerColors.getValue(player)
@@ -319,24 +323,9 @@ fun PlayersPager(
                                 null
                             }
                         }
-                        // Lyrics: only the displayed page drives the shared VM, so the
-                        // fetch (and the button) track the player currently on screen.
-                        val currentTrack = player.queueInfo?.currentItem?.track as? Track
+                        // Only the displayed page drives the shared lyrics VM, so the button
+                        // tracks the player currently on screen.
                         val isCurrentPage = page == playerPagerState.currentPage
-
-                        val lyrics = currentTrack?.metadata?.let { metadata ->
-                            val plain = metadata.lyrics
-                            val lrc = metadata.lrcLyrics
-                            when {
-                                !lrc.isNullOrBlank() ->
-                                    LrcParser.parse(lrc).takeIf { it.isNotEmpty() }
-                                        ?.let { Lyrics.Synced(it) }
-                                        ?: Lyrics.Plain(lrc)
-                                !plain.isNullOrBlank() -> Lyrics.Plain(plain)
-                                else -> null
-                            }
-                        }
-                        var sheetLyrics by remember(currentTrack) { mutableStateOf<Lyrics?>(null) }
                         if (!expanded) {
                             CollapsedPlayerPage(
                                 isWideScreen = isWideScreen,
@@ -357,7 +346,7 @@ fun PlayersPager(
                                 onDspButton = onDspButton.takeIf { !player.player.isGroup },
                                 onSleepTimerButton = onSleepTimerButton.takeIf { sleepTimerSupported },
                                 playerAction = playerAction1,
-                                playlistActions = actionsViewModel,
+                                onAddToPlaylist = onAddToPlaylist,
                                 onFavoriteClick = {
                                     actionsViewModel.onFavoriteClick(it)
                                 },
@@ -375,15 +364,10 @@ fun PlayersPager(
                                 livePositionFlow = livePositionFlow,
                                 bufferedAheadSecFlow = bufferedAheadSecFlow,
                                 lyricsAvailable = isCurrentPage && lyrics != null,
-                                onLyricsClick = { sheetLyrics = lyrics },
+                                onLyricsClick = onLyricsClick,
+                                onAudioChainClick = onAudioChainClick,
+                                onPlaybackSpeedClick = onPlaybackSpeedClick,
                                 chapterProgressEnabled = chapterProgressEnabled,
-                            )
-                        }
-                        sheetLyrics?.let { shown ->
-                            LyricsSheet(
-                                lyrics = shown,
-                                livePositionFlow = livePositionFlow,
-                                onDismiss = { sheetLyrics = null },
                             )
                         }
                     }
@@ -455,7 +439,7 @@ private fun ExpandedPlayerPage(
     onDspButton: (() -> Unit)?,
     onSleepTimerButton: (() -> Unit)?,
     playerAction: (PlayerData, PlayerAction) -> Unit,
-    playlistActions: PlaylistActions? = null,
+    onAddToPlaylist: ((AppMediaItem) -> Unit)? = null,
     onFavoriteClick: (AppMediaItem) -> Unit,
     onClose: () -> Unit,
     queueAction: (QueueAction) -> Unit,
@@ -472,6 +456,8 @@ private fun ExpandedPlayerPage(
     bufferedAheadSecFlow: Flow<Double>? = null,
     lyricsAvailable: Boolean = false,
     onLyricsClick: () -> Unit = {},
+    onAudioChainClick: () -> Unit = {},
+    onPlaybackSpeedClick: () -> Unit = {},
     chapterProgressEnabled: Boolean = true,
 ) {
     // The queue sits beside the player whenever the window is wide (see
@@ -608,8 +594,7 @@ private fun ExpandedPlayerPage(
                         },
                         onPlayerSelected = { moveToPlayer(it) },
                         onOpenDsp = onDspButton,
-                        onOpenSleepTimer = onSleepTimerButton,
-                        playlistActions = playlistActions,
+                        onAddToPlaylist = onAddToPlaylist,
                         tvFocusFlow = headerTvFocusFlow,
                         tvFocusLinks = headerFocusLinks,
                     )
@@ -730,6 +715,8 @@ private fun ExpandedPlayerPage(
                             onFavoriteClick = onFavoriteClick,
                             lyricsAvailable = lyricsAvailable,
                             onLyricsClick = onLyricsClick,
+                            onAudioChainClick = onAudioChainClick,
+                            onPlaybackSpeedClick = onPlaybackSpeedClick,
                             livePositionFlow = livePositionFlow,
                             tvFocusFlow = playerTvFocusFlow,
                             bufferedAheadSecFlow = bufferedAheadSecFlow,
@@ -871,7 +858,7 @@ private fun ExpandedPlayerPage(
 
                 if (!showSideQueue) {
                     CollapsibleQueue(
-                        playlistActions = playlistActions,
+                        onAddToPlaylist = onAddToPlaylist,
                         modifier = Modifier
                             .conditional(
                                 condition = isQueueExpanded,
@@ -910,7 +897,7 @@ private fun ExpandedPlayerPage(
                     isCurrentPage = isCurrentPage,
                     contentPadding = contentPadding,
                     queueAction = queueAction,
-                    playlistActions = playlistActions,
+                    onAddToPlaylist = onAddToPlaylist,
                     livePositionFlow = livePositionFlow,
                     onChapterClick = { chapter ->
                         playerAction(player, PlayerAction.SeekTo(chapterSeekSeconds(chapter.start)))
@@ -930,14 +917,12 @@ private fun PlayerOverflowMenu(
     navigateToItem: (AppMediaItem) -> Unit,
     onPlayerSelected: (String) -> Unit,
     onOpenDsp: (() -> Unit)?,
-    onOpenSleepTimer: (() -> Unit)?,
-    playlistActions: PlaylistActions? = null,
+    onAddToPlaylist: ((AppMediaItem) -> Unit)? = null,
     tvFocusFlow: TvFocusFlow? = null,
     tvFocusLinks: Map<String, TvFocusFlow.Links> = emptyMap(),
 ) {
     var transferMenuExpanded by remember { mutableStateOf(false) }
     val currentTrack = currentPlayer.queueInfo?.currentItem?.track as? Track
-    var showAddToPlaylist by remember { mutableStateOf(false) }
 
     val queueData = currentPlayer.queue as? DataState.Data
     val queueInfo = queueData?.data?.info
@@ -960,45 +945,6 @@ private fun PlayerOverflowMenu(
                     onClick = { queueAction(QueueAction.ClearQueue(queueId)) },
                 ),
             )
-            if (queueData.data.info.let { it.autoPlayEnabled != null && !it.isDynamicPlaylist }) {
-                add(
-                    OverflowMenuOption(
-                        title = stringResource(
-                            if (queueData.data.info.autoPlayEnabled == true) {
-                                Res.string.queue_autoplay_disable
-                            } else {
-                                Res.string.queue_autoplay_enable
-                            },
-                        ),
-                        icon = Icons.Default.AllInclusive,
-                        onClick = {
-                            playerAction(
-                                PlayerAction.ToggleDontStopTheMusic(
-                                    queueData.data.info.autoPlayEnabled == true,
-                                ),
-                            )
-                        },
-                    ),
-                )
-            }
-
-            queueData.data.info.crossfadeEnabled?.let { crossfadeEnabled ->
-                add(
-                    OverflowMenuOption(
-                        title = stringResource(
-                            if (crossfadeEnabled) {
-                                Res.string.queue_crossfade_disable
-                            } else {
-                                Res.string.queue_crossfade_enable
-                            },
-                        ),
-                        icon = CrossfadeIcon,
-                        onClick = {
-                            playerAction(PlayerAction.ToggleCrossfade(crossfadeEnabled))
-                        },
-                    ),
-                )
-            }
         }
     } else {
         emptyList()
@@ -1044,7 +990,9 @@ private fun PlayerOverflowMenu(
 
     // Power sits at the very top of the menu, ahead of queue/player/navigation options.
     val powerOption = if (currentPlayer.player.canPower) {
-        val isPowered = currentPlayer.player.isPowered
+        // Reads the dormant state, not the raw flag: an unreachable player reports itself
+        // powered, and offering "Power off" for a sleeping speaker reads as nonsense.
+        val isPowered = !currentPlayer.player.isPoweredOff
         listOf(
             OverflowMenuOption(
                 title = stringResource(
@@ -1070,15 +1018,6 @@ private fun PlayerOverflowMenu(
                 ),
             )
         }
-        if (onOpenSleepTimer != null) {
-            add(
-                OverflowMenuOption(
-                    title = stringResource(Res.string.player_sleep_timer),
-                    icon = Icons.Default.Bedtime,
-                    onClick = onOpenSleepTimer,
-                ),
-            )
-        }
         add(dynamicColorsMenuOption())
         // Buffer indicator toggle — local player only (the segment it controls is local-only).
         if (currentPlayer.isLocal) {
@@ -1094,12 +1033,12 @@ private fun PlayerOverflowMenu(
         )
             ?: emptyList()
     val trackActions = buildList {
-        if (currentTrack != null && playlistActions != null) {
+        currentTrack?.takeIf { onAddToPlaylist != null }?.let { track ->
             add(
                 OverflowMenuOption(
                     title = stringResource(Res.string.action_add_to_playlist),
                     icon = Icons.AutoMirrored.Filled.PlaylistAdd,
-                    onClick = { showAddToPlaylist = true },
+                    onClick = { onAddToPlaylist?.invoke(track) },
                 ),
             )
         }
@@ -1129,14 +1068,6 @@ private fun PlayerOverflowMenu(
                 )
             }
         }
-    }
-
-    if (showAddToPlaylist && currentTrack != null && playlistActions != null) {
-        AddToPlaylistDialog(
-            item = currentTrack,
-            playlistActions = playlistActions,
-            onDismiss = { showAddToPlaylist = false },
-        )
     }
 }
 

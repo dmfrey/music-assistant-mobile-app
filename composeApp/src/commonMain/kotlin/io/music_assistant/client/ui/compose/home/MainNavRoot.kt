@@ -69,6 +69,8 @@ import io.music_assistant.client.ui.compose.item.ItemDetailsViewModel
 import io.music_assistant.client.ui.compose.item.ItemListScreen
 import io.music_assistant.client.ui.compose.item.ItemListViewModel
 import io.music_assistant.client.ui.compose.item.ViewModeViewModel
+import io.music_assistant.client.ui.compose.library.AiRadioScreen
+import io.music_assistant.client.ui.compose.library.AiRadioViewModel
 import io.music_assistant.client.ui.compose.library.BrowseScreen
 import io.music_assistant.client.ui.compose.library.BrowseViewModel
 import io.music_assistant.client.ui.compose.library.LibraryCategoriesViewModel
@@ -474,12 +476,24 @@ private fun mainNavEntryProvider(
                 contentPadding = contentPadding,
                 state = screenState,
                 onCategoryClick = { category ->
-                    if (category == LibraryCategory.BROWSE) {
-                        multiBackStack.add(MainNav.Browse(path = null, title = null))
-                    } else {
-                        category.mediaType?.let { multiBackStack.add(MainNav.LibraryList(it)) }
+                    when (category) {
+                        LibraryCategory.BROWSE ->
+                            multiBackStack.add(MainNav.Browse(path = null, title = null))
+
+                        LibraryCategory.AI_RADIO -> multiBackStack.add(MainNav.AiRadio)
+
+                        else ->
+                            category.mediaType?.let { multiBackStack.add(MainNav.LibraryList(it)) }
                     }
                 },
+            )
+        }
+
+        entry<MainNav.AiRadio> {
+            AiRadioScreen(
+                viewModel = koinViewModel<AiRadioViewModel>(),
+                contentPadding = contentPadding,
+                onBack = { multiBackStack.removeLastOrNull() },
             )
         }
 
@@ -686,6 +700,10 @@ private sealed interface MainNav : NavKey {
     @Serializable
     data class LibraryList(val mediaType: MediaType) : MainNav
 
+    /** Stations of the optional `ai_radio` plugin. Not a media type, hence its own route. */
+    @Serializable
+    data object AiRadio : MainNav
+
     /**
      * One level of the folder-style Browse tree. [path] is the server browse path (null = root);
      * [stackingId] keeps stacked levels distinct in the back stack (mirrors [ItemDetails]).
@@ -732,6 +750,7 @@ private fun rememberMainNavBackStack(bottom: MainNav) = rememberNavBackStack(
                     subclass(MainNav.Landing::class, MainNav.Landing.serializer())
                     subclass(MainNav.Library::class, MainNav.Library.serializer())
                     subclass(MainNav.LibraryList::class, MainNav.LibraryList.serializer())
+                    subclass(MainNav.AiRadio::class, MainNav.AiRadio.serializer())
                     subclass(MainNav.Browse::class, MainNav.Browse.serializer())
                     subclass(
                         MainNav.ItemDetails::class,

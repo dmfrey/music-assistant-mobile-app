@@ -70,7 +70,6 @@ import io.music_assistant.client.data.model.client.items.PodcastEpisode
 import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.data.model.client.stringResource
 import io.music_assistant.client.data.model.client.toClickContext
-import io.music_assistant.client.data.model.server.ProviderMapping
 import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.CenteredProgress
 import io.music_assistant.client.ui.compose.common.CenteredText
@@ -100,6 +99,8 @@ import io.music_assistant.client.ui.compose.common.rememberDynamicColorsEnabled
 import io.music_assistant.client.ui.compose.common.rememberExtractedColorsSource
 import io.music_assistant.client.ui.compose.common.toDisplayString
 import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
+import io.music_assistant.client.ui.compose.item.artist.ArtistDetailsViewModel
+import io.music_assistant.client.ui.compose.item.artist.ArtistDetailsViewModel.Section
 import io.music_assistant.client.ui.compose.nav.TopBarLayout
 import io.music_assistant.client.ui.fullBleed
 import io.music_assistant.client.ui.theme.AppTheme
@@ -119,6 +120,8 @@ import musicassistantclient.composeapp.generated.resources.media_type_chapters
 import musicassistantclient.composeapp.generated.resources.media_type_episodes
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
+import org.koin.compose.viewmodel.koinViewModel
+import org.koin.core.parameter.parametersOf
 
 // Android TV: initial-focus landing on the primary play button once the item finishes loading.
 // The platform can drop the first requestFocus on this hardware, so retry until the button
@@ -168,8 +171,7 @@ fun ItemDetailsScreen(
         onPlayableItemsSortChanged = itemDetailsViewModel::onPlayableItemsSortChanged,
         onTabSelected = itemDetailsViewModel::onTabSelected,
         onLoadSimilarArtists = itemDetailsViewModel::loadSimilarArtists,
-        onAlbumMappingChanged = itemDetailsViewModel::loadAlbumsForProvider,
-        onTrackMappingChanged = itemDetailsViewModel::loadTopTracksForProvider,
+        onRefreshPlaylist = itemDetailsViewModel::refreshPlaylistTracks,
     )
 }
 
@@ -198,8 +200,7 @@ fun ItemDetails(
     onPlayableItemsSortChanged: (SubItemContext, SortOption) -> Unit = { _, _ -> },
     onTabSelected: (ItemDetailsTab) -> Unit = {},
     onLoadSimilarArtists: () -> Unit = {},
-    onAlbumMappingChanged: (ProviderMapping) -> Unit = { },
-    onTrackMappingChanged: (ProviderMapping) -> Unit = { },
+    onRefreshPlaylist: () -> Unit = {},
 ) {
     val playlistActions = object : PlaylistActions {
         override suspend fun getEditablePlaylists(): List<Playlist> {
@@ -288,8 +289,7 @@ fun ItemDetails(
                     contentPadding = contentPadding,
                     onTabSelected = onTabSelected,
                     onLoadSimilarArtists = onLoadSimilarArtists,
-                    onAlbumMappingChanged = onAlbumMappingChanged,
-                    onTrackMappingChanged = onTrackMappingChanged,
+                    onRefreshPlaylist = onRefreshPlaylist,
                 )
             }
 
@@ -327,8 +327,7 @@ private fun ItemContent(
     contentPadding: PaddingValues,
     onTabSelected: (ItemDetailsTab) -> Unit,
     onLoadSimilarArtists: () -> Unit,
-    onAlbumMappingChanged: (ProviderMapping) -> Unit,
-    onTrackMappingChanged: (ProviderMapping) -> Unit,
+    onRefreshPlaylist: () -> Unit,
 ) {
     // Tabs, the loading gate, and the selected tab are all derived in ItemDetailsViewModel.State.
     val tabs = state.tabs
@@ -425,6 +424,9 @@ private fun ItemContent(
                 playlistActions = playlistActions.takeIf { item.supportsAddToPlaylist },
                 navigateToItem = onNavigateClick,
                 onSimilarArtistsClick = { showSimilarArtists = true },
+                // force_refresh is a playlist-tracks-only server argument, so no other
+                // media type gets the action.
+                onRefresh = onRefreshPlaylist.takeIf { item is Playlist },
             )
         },
     ) {
@@ -438,7 +440,6 @@ private fun ItemContent(
                 ProvideClickActions(ClickContext.ARTIST) {
                     ArtistContent(
                         artist = item,
-                        sections = state.artistSections,
                         onNavigateClick = onNavigateClick,
                         onNavigateToList = { title, itemList ->
                             onNavigateToList(title, itemList, ClickContext.ARTIST)
@@ -449,8 +450,6 @@ private fun ItemContent(
                         providerIconFetcher = providerIconFetcher,
                         contentPadding = contentPadding,
                         heroSlot = heroSlot,
-                        onAlbumMappingChanged = onAlbumMappingChanged,
-                        onTrackMappingChanged = onTrackMappingChanged,
                     )
                 }
             } else if (tabs.isEmpty()) {
@@ -626,6 +625,7 @@ private fun TabContent(
     when (tab) {
         ItemDetailsTab.GENRE_ALBUMS -> AlbumsTabContent(
             albumsState = state.albumsState,
+            parentItem = item,
             viewModeProvider = viewModeProvider,
             onNavigateClick = onNavigateClick,
             onPlayChildClick = onPlayChildClick,
@@ -646,6 +646,7 @@ private fun TabContent(
             parentItem = item,
             playableItemsSortOption = state.playableItemsSortOption,
             viewModeProvider = viewModeProvider,
+            onNavigateClick = onNavigateClick,
             onPlayChildClick = onPlayChildClick,
             playlistActions = playlistActions,
             progressActions = progressActions,
@@ -772,6 +773,7 @@ private inline fun <T> LazyGridScope.tabListBody(
 @Composable
 private fun AlbumsTabContent(
     albumsState: DataState<List<Album>>,
+    parentItem: AppMediaItem,
     viewModeProvider: @Composable (MediaType) -> ViewMode,
     onNavigateClick: (AppMediaItem) -> Unit,
     onPlayChildClick: PlayHandler<AppMediaItem>,
@@ -800,6 +802,8 @@ private fun AlbumsTabContent(
                     item = album,
                     viewMode = viewMode,
                     onNavigateClick = onNavigateClick,
+                    navigateToItem = onNavigateClick,
+                    containerItem = parentItem,
                     onPlayOption = onPlayChildClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
@@ -854,6 +858,7 @@ private fun PlayablesTabContent(
     parentItem: AppMediaItem,
     playableItemsSortOption: SortOption?,
     viewModeProvider: @Composable (MediaType) -> ViewMode,
+    onNavigateClick: (AppMediaItem) -> Unit,
     onPlayChildClick: PlayHandler<AppMediaItem>,
     playlistActions: PlaylistActions,
     progressActions: ProgressActions?,
@@ -873,6 +878,8 @@ private fun PlayablesTabContent(
                 item = track,
                 viewMode = viewMode,
                 showTrackNumber = parentItem is Album,
+                navigateToItem = onNavigateClick,
+                containerItem = parentItem,
                 onPlayOption = onPlayChildClick,
                 playlistActions = playlistActions,
                 onRemoveFromPlaylist = if (parentItem is Playlist && parentItem.isEditable) {
@@ -944,7 +951,6 @@ private fun DiscHeader(disc: Int) {
 @Composable
 private fun ArtistContent(
     artist: Artist,
-    sections: ArtistSections,
     onNavigateClick: (AppMediaItem) -> Unit,
     onNavigateToList: (String, ItemList) -> Unit,
     onPlayChildClick: PlayHandler<AppMediaItem>,
@@ -953,9 +959,12 @@ private fun ArtistContent(
     providerIconFetcher: @Composable (Modifier, String) -> Unit,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
-    onAlbumMappingChanged: (ProviderMapping) -> Unit,
-    onTrackMappingChanged: (ProviderMapping) -> Unit,
 ) {
+    val artistDetailsViewModel = koinViewModel<ArtistDetailsViewModel> { parametersOf(artist) }
+    val librarySection by artistDetailsViewModel.library.collectAsStateWithLifecycle()
+    val allSection by artistDetailsViewModel.all.collectAsStateWithLifecycle()
+    val topTracksSection by artistDetailsViewModel.topTracks.collectAsStateWithLifecycle()
+
     NoOverscroll {
         LazyColumn(
             modifier = Modifier.testTag(ItemDetailsScreenSemantics.LIST_TAG),
@@ -965,7 +974,7 @@ private fun ArtistContent(
             item {
                 SectionRow(
                     artist = artist,
-                    sectionData = sections.library,
+                    sectionData = librarySection,
                     id = "library",
                     title = Res.string.artist_section_in_library.toDisplayString(),
                     onNavigateClick = onNavigateClick,
@@ -980,12 +989,12 @@ private fun ArtistContent(
             item {
                 SectionRow(
                     artist = artist,
-                    sectionData = sections.all,
+                    sectionData = allSection,
                     id = "all",
                     title = Res.string.artist_section_all.toDisplayString(),
                     onNavigateClick = onNavigateClick,
                     onNavigateToList = onNavigateToList,
-                    onFilterSelected = onAlbumMappingChanged,
+                    onFilterSelected = artistDetailsViewModel::loadAll,
                     onPlayChildClick = onPlayChildClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
@@ -996,12 +1005,12 @@ private fun ArtistContent(
             item {
                 SectionRow(
                     artist = artist,
-                    sectionData = sections.topTracks,
+                    sectionData = topTracksSection,
                     id = "topTracks",
                     title = stringResource(Res.string.artist_section_top).toDisplayString(),
                     onNavigateClick = onNavigateClick,
                     onNavigateToList = onNavigateToList,
-                    onFilterSelected = onTrackMappingChanged,
+                    onFilterSelected = artistDetailsViewModel::loadTopTracks,
                     onPlayChildClick = onPlayChildClick,
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
@@ -1020,7 +1029,7 @@ private fun <T : AppMediaItem> SectionRow(
     title: DisplayString,
     onNavigateClick: (AppMediaItem) -> Unit,
     onNavigateToList: (String, ItemList) -> Unit,
-    onFilterSelected: (ProviderMapping) -> Unit = {},
+    onFilterSelected: (ItemList) -> Unit = {},
     onPlayChildClick: PlayHandler<AppMediaItem>,
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
@@ -1028,16 +1037,17 @@ private fun <T : AppMediaItem> SectionRow(
 ) {
     CategoryRow(
         data = sectionData,
+        containerItem = artist,
         itemCategoryProvider = { section ->
             ItemCategory(
                 id = id,
                 title = title,
                 items = section.items,
                 list = section.itemList,
-                filter = if (section.providerDomain != null && artist.providerMappings != null) {
+                filter = if (section.providerFilter != null) {
                     ItemCategory.Filter(
-                        label = section.providerDomain.toDisplayString(),
-                        options = artist.providerMappings,
+                        label = section.providerFilter.current.providerDomain.toDisplayString(),
+                        options = section.providerFilter.options,
                         labelTransform = { it.providerDomain.toDisplayString() },
                         contentDescription = Res.string.cd_provider_filter,
                     )
@@ -1249,7 +1259,7 @@ private fun PreviewPlaylist(isRowMode: Boolean = true) {
     AppTheme(darkTheme = false) {
         ItemDetails(
             state = ItemDetailsViewModel.State(
-                DataState.Data(AppMediaItemFixtures.playlist("Title")),
+                DataState.Data(AppMediaItemFixtures.playlist("Title", "blah")),
                 DataState.NoData(),
                 DataState.Data(AppMediaItemFixtures.tracks(listOf("Track 1", "Track 2"))),
             ),
@@ -1301,8 +1311,8 @@ private fun PreviewAudiobook(isRowMode: Boolean = true) {
             state = ItemDetailsViewModel.State(
                 DataState.Data(
                     AppMediaItemFixtures.audiobook(
-                        "Title",
-                        listOf("Chapter 1", "Chapter 2"),
+                        name = "Title",
+                        chapters = listOf("Chapter 1", "Chapter 2"),
                     ),
                 ),
                 DataState.NoData(),
