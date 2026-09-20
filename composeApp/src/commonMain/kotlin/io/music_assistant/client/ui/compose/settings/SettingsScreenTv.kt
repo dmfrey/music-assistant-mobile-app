@@ -30,8 +30,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import io.music_assistant.client.player.sendspin.audio.Codec
-import io.music_assistant.client.player.sendspin.audio.Codecs
+import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
 import io.music_assistant.client.ui.compose.common.OverflowMenuOption
 import io.music_assistant.client.ui.compose.common.TvFocusFlow
@@ -42,6 +41,7 @@ import io.music_assistant.client.ui.compose.common.tvFocus
 import io.music_assistant.client.utils.SessionState
 import io.music_assistant.client.utils.hasCamera
 import io.music_assistant.client.webrtc.model.RemoteId
+import io.music_assistant.sendspin.api.AudioCodec
 import kotlinx.coroutines.delay
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.cd_connection_history
@@ -62,7 +62,6 @@ import musicassistantclient.composeapp.generated.resources.settings_player_name
 import musicassistantclient.composeapp.generated.resources.settings_port
 import musicassistantclient.composeapp.generated.resources.settings_remote_id
 import musicassistantclient.composeapp.generated.resources.settings_remote_id_invalid
-import musicassistantclient.composeapp.generated.resources.settings_sendspin_require_encryption
 import musicassistantclient.composeapp.generated.resources.settings_server_host
 import musicassistantclient.composeapp.generated.resources.settings_use_tls
 import musicassistantclient.composeapp.generated.resources.settings_use_tls_wss
@@ -351,11 +350,10 @@ internal fun SendspinSectionTv(
     sendspinUseCustomConnection: Boolean,
     sendspinPort: Int,
     sendspinPath: String,
-    sendspinCodecPreference: Codec,
+    sendspinCodecPreference: AudioCodec,
 ) {
     val sendspinHost by viewModel.sendspinHost.collectAsStateWithLifecycle()
     val sendspinUseTls by viewModel.sendspinUseTls.collectAsStateWithLifecycle()
-    val sendspinRequireEncryption by viewModel.sendspinRequireEncryption.collectAsStateWithLifecycle()
 
     var editing by remember { mutableStateOf<String?>(null) }
     var returnTo by remember { mutableStateOf("playerName") }
@@ -429,7 +427,7 @@ internal fun SendspinSectionTv(
 
     // Codec selection
     OverflowMenuButton(
-        options = Codecs.list.map { item ->
+        options = SettingsRepository.CODECS.map { item ->
             OverflowMenuOption(
                 title = item.localizedTitle(),
             ) { viewModel.setSendspinCodecPreference(item) }
@@ -489,30 +487,6 @@ internal fun SendspinSectionTv(
         )
         Text(
             text = stringResource(Res.string.settings_custom_sendspin),
-            color = if (sendspinEnabled) {
-                MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-            } else {
-                MaterialTheme.colorScheme.onBackground
-            },
-        )
-    }
-
-    // Require-encryption toggle: refuse the legacy cleartext protocol
-    // when the server is too old for encrypted Sendspin.
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Checkbox(
-            checked = sendspinRequireEncryption,
-            onCheckedChange = { viewModel.setSendspinRequireEncryption(it) },
-            enabled = !sendspinEnabled,
-            modifier = Modifier.tvFocus(authFlow, authLinks, "requireEncryption"),
-        )
-        Text(
-            text = stringResource(Res.string.settings_sendspin_require_encryption),
             color = if (sendspinEnabled) {
                 MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
             } else {

@@ -75,10 +75,9 @@ import io.music_assistant.client.api.ConnectionInfo
 import io.music_assistant.client.api.Defaults
 import io.music_assistant.client.data.model.server.ServerInfo
 import io.music_assistant.client.data.model.server.User
-import io.music_assistant.client.player.sendspin.SendspinConfig
-import io.music_assistant.client.player.sendspin.audio.Codecs
 import io.music_assistant.client.settings.ConnectionHistoryEntry
 import io.music_assistant.client.settings.ConnectionType
+import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.auth.AuthenticationPanel
 import io.music_assistant.client.ui.compose.common.DisplayString
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
@@ -160,7 +159,6 @@ import musicassistantclient.composeapp.generated.resources.settings_remote_id_hi
 import musicassistantclient.composeapp.generated.resources.settings_remote_id_invalid
 import musicassistantclient.composeapp.generated.resources.settings_saved_connections
 import musicassistantclient.composeapp.generated.resources.settings_scan_qr
-import musicassistantclient.composeapp.generated.resources.settings_sendspin_require_encryption
 import musicassistantclient.composeapp.generated.resources.settings_server
 import musicassistantclient.composeapp.generated.resources.settings_server_base_path
 import musicassistantclient.composeapp.generated.resources.settings_server_base_path_hint
@@ -1486,7 +1484,7 @@ private fun SendspinSection(
 
             // Codec selection
             OverflowMenuButton(
-                options = Codecs.list.map { item ->
+                options = SettingsRepository.CODECS.map { item ->
                     OverflowMenuOption(
                         title = item.localizedTitle(),
                     ) { viewModel.setSendspinCodecPreference(item) }
@@ -1558,9 +1556,9 @@ private fun SendspinSection(
                 Slider(
                     value = sendspinBufferCapacityMb.toFloat(),
                     onValueChange = { viewModel.setSendspinBufferCapacityMb(it.roundToInt()) },
-                    valueRange = SendspinConfig.BUFFER_MB_MIN.toFloat()..SendspinConfig.BUFFER_MB_MAX.toFloat(),
-                    steps = (SendspinConfig.BUFFER_MB_MAX - SendspinConfig.BUFFER_MB_MIN) /
-                        SendspinConfig.BUFFER_MB_STEP - 1,
+                    valueRange = SettingsRepository.BUFFER_MB_MIN.toFloat()..SettingsRepository.BUFFER_MB_MAX.toFloat(),
+                    steps = (SettingsRepository.BUFFER_MB_MAX - SettingsRepository.BUFFER_MB_MIN) /
+                            SettingsRepository.BUFFER_MB_STEP - 1,
                     enabled = !sendspinEnabled,
                 )
             }
@@ -1580,32 +1578,6 @@ private fun SendspinSection(
                 )
                 Text(
                     text = stringResource(Res.string.settings_custom_sendspin),
-                    color = if (sendspinEnabled) {
-                        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.onBackground
-                    },
-                )
-            }
-
-            // Require-encryption toggle: refuse the legacy cleartext protocol
-            // when the server is too old for encrypted Sendspin.
-            val sendspinRequireEncryption by viewModel.sendspinRequireEncryption
-                .collectAsStateWithLifecycle()
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = sendspinRequireEncryption,
-                    onCheckedChange = { viewModel.setSendspinRequireEncryption(it) },
-                    enabled = !sendspinEnabled,
-                    modifier = Modifier.tvFocus(authFlow, authLinks, "requireEncryption"),
-                )
-                Text(
-                    text = stringResource(Res.string.settings_sendspin_require_encryption),
                     color = if (sendspinEnabled) {
                         MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
                     } else {
