@@ -119,6 +119,18 @@ dependencies {
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
+    // androidx.car.app (via guava) and androidx.camera pull older transitive versions of
+    // these three than espresso/androidx.test.ext:junit below require. AGP's consistent
+    // resolution then locks the androidTest classpath to whatever version the app itself
+    // resolves, so without this the two disagree and dependency resolution fails outright.
+    // Constraining the app's own resolution to the newer, compatible versions keeps both
+    // classpaths consistent instead of pinning the androidTest side down.
+    constraints {
+        implementation(libs.androidx.concurrent.futures)
+        implementation(libs.androidx.concurrent.futures.ktx)
+        implementation(libs.errorprone.annotations)
+    }
+
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.androidx.compose.ui.test.junit4)
