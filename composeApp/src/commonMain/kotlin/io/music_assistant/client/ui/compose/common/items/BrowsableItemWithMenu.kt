@@ -25,6 +25,7 @@ import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.MenuItem
 import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
 import io.music_assistant.client.ui.compose.common.tvFocusRing
 
 @Composable
@@ -37,7 +38,7 @@ fun AlbumWithMenu(
     onPlayOption: PlayHandler<Album>,
     playlistActions: PlaylistActions? = null,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(
@@ -80,7 +81,7 @@ fun ArtistWithMenu(
     onNavigateClick: (Artist) -> Unit,
     onPlayOption: PlayHandler<Artist>,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(
@@ -120,7 +121,7 @@ fun PlaylistWithMenu(
     onNavigateClick: (Playlist) -> Unit,
     onPlayOption: PlayHandler<Playlist>,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(
@@ -162,7 +163,7 @@ fun AudiobookWithMenu(
     playlistActions: PlaylistActions? = null,
     libraryActions: LibraryActions,
     progressActions: ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(
@@ -204,7 +205,7 @@ fun GenreWithMenu(
     onNavigateClick: (Genre) -> Unit,
     onPlayOption: PlayHandler<Genre>,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(
@@ -244,7 +245,7 @@ fun PodcastWithMenu(
     onNavigateClick: (Podcast) -> Unit,
     onPlayOption: PlayHandler<Podcast>,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     BrowsableItemWithMenu(

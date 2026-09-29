@@ -11,9 +11,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -46,6 +49,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import io.music_assistant.client.data.model.client.items.Album
@@ -60,7 +65,10 @@ import io.music_assistant.client.data.model.client.items.RadioStation
 import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.ui.compose.common.DataState
 import io.music_assistant.client.ui.compose.common.DisplayString
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
 import io.music_assistant.client.ui.compose.common.toDisplayString
+import io.music_assistant.client.ui.compose.grid.GridItem
+import io.music_assistant.client.ui.compose.grid.gridItemMinSize
 import io.music_assistant.client.ui.compose.item.ItemList
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.cd_view_all
@@ -79,7 +87,7 @@ fun <T, U> CategoryRow(
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
     progressActions: ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit),
+    providerIconFetcher: ProviderIconFetcher,
     bottomFocusRequester: FocusRequester? = null,
 ) {
     if (data is DataState.Data) {
@@ -97,7 +105,6 @@ fun <T, U> CategoryRow(
             bottomFocusRequester = bottomFocusRequester,
         )
     } else if (data is DataState.Loading) {
-        val placeholderWidth = 140.dp
         val placeholderColor by rememberInfiniteTransition().animateColor(
             initialValue = Color.Gray.copy(alpha = 0.1f),
             targetValue = Color.Gray.copy(alpha = 0.3f),
@@ -109,28 +116,14 @@ fun <T, U> CategoryRow(
 
         RowWithTitle(
             title = {
-                val height = with(LocalDensity.current) {
-                    LocalTextStyle.current.fontSize.toDp()
-                }
-
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(placeholderColor)
-                        .size(width = placeholderWidth, height = height),
-                )
+                PlaceHolderText(Modifier.widthIn(gridItemMinSize()), placeholderColor, LocalTextStyle.current)
             },
             actions = {},
             bottomFocusRequester = bottomFocusRequester,
             row = {
                 repeat(PLACEHOLDER_ITEMS) {
                     item {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(placeholderColor)
-                                .size(width = placeholderWidth, height = 152.dp),
-                        )
+                        PlaceholderGridItem(placeholderColor)
                     }
                 }
             },
@@ -149,7 +142,7 @@ fun <T> CategoryRow(
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
     progressActions: ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit),
+    providerIconFetcher: ProviderIconFetcher,
     bottomFocusRequester: FocusRequester? = null,
 ) {
     if (itemCategory.items.isEmpty() && itemCategory.filter == null) {
@@ -203,7 +196,7 @@ fun CategoryRow(
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
     progressActions: ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit),
+    providerIconFetcher: ProviderIconFetcher,
     rowTag: String? = null,
     // Android TV: set by a caller only on its last visible row, to route D-pad DOWN out of this
     // row's LazyRow to a fixed element below the scrolling content (e.g. the persistent
@@ -357,8 +350,9 @@ private fun RowWithTitle(
     Column(modifier) {
         Row(
             modifier = Modifier
+                .height(56.dp)
                 .fillMaxWidth()
-                .padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
+                .padding(start = 16.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -468,7 +462,12 @@ private fun <T> FilterSelector(
             selected = true,
             onClick = { expanded = true },
             label = {
-                Text(label)
+                Text(
+                    label,
+                    modifier = Modifier.widthIn(max = 96.dp),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             },
         )
 
@@ -521,7 +520,7 @@ fun PreviewCategoryRowEmpty() {
                 TODO("Not yet implemented")
             }
         },
-        providerIconFetcher = { _, _ -> },
+        providerIconFetcher = { _, _, _ -> },
     )
 }
 
@@ -561,7 +560,7 @@ fun PreviewCategoryLoading() {
                 TODO("Not yet implemented")
             }
         },
-        providerIconFetcher = { _, _ -> },
+        providerIconFetcher = { _, _, _ -> },
     )
 }
 
@@ -601,6 +600,46 @@ fun PreviewCategoryNoData() {
                 TODO("Not yet implemented")
             }
         },
-        providerIconFetcher = { _, _ -> },
+        providerIconFetcher = { _, _, _ -> },
+    )
+}
+
+@Composable
+fun PlaceholderGridItem(
+    color: Color,
+) {
+    GridItem(
+        description = null,
+        onClick = {  },
+        onLongClick = {  },
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(color)
+                .fillMaxWidth()
+                .aspectRatio(1f),
+        )
+
+        Spacer(Modifier.height(4.dp))
+
+        PlaceHolderText(Modifier.fillMaxWidth(fraction = 0.9f), color, mediaItemTitleStyle())
+        PlaceHolderText(Modifier.fillMaxWidth(fraction = 0.5f), color, mediaItemSubtitleStyle())
+    }
+}
+
+@Composable
+private fun PlaceHolderText(modifier: Modifier, color: Color, textStyle: TextStyle) {
+    val padding = 2.dp
+    val bodyMediumHeight = with(LocalDensity.current) {
+        textStyle.lineHeight.toDp() - padding * 2
+    }
+
+    Box(
+        modifier = modifier
+            .padding(padding)
+            .clip(RoundedCornerShape(8.dp))
+            .background(color)
+            .height(bodyMediumHeight),
     )
 }

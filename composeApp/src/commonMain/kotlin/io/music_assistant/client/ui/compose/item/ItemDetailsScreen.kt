@@ -54,6 +54,7 @@ import io.music_assistant.client.data.model.client.Chapter
 import io.music_assistant.client.data.model.client.ClickContext
 import io.music_assistant.client.data.model.client.ImageType
 import io.music_assistant.client.data.model.client.MediaType
+import io.music_assistant.client.data.model.client.ProviderDetails
 import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.SortField
 import io.music_assistant.client.data.model.client.SortOption
@@ -93,18 +94,20 @@ import io.music_assistant.client.ui.compose.common.items.TrackWithMenu
 import io.music_assistant.client.ui.compose.common.items.lazyListOccurrenceKeys
 import io.music_assistant.client.ui.compose.common.items.playableLazyListOccurrenceKeys
 import io.music_assistant.client.ui.compose.common.items.supportsAddToPlaylist
-import io.music_assistant.client.ui.compose.common.providers.ProviderIcon
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import io.music_assistant.client.ui.compose.common.providers.providerIconFetcher
 import io.music_assistant.client.ui.compose.common.rememberAnimatedPlayerColors
 import io.music_assistant.client.ui.compose.common.rememberDynamicColorsEnabled
 import io.music_assistant.client.ui.compose.common.rememberExtractedColorsSource
 import io.music_assistant.client.ui.compose.common.toDisplayString
 import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
+import io.music_assistant.client.ui.compose.grid.gridItemMinSize
 import io.music_assistant.client.ui.compose.item.artist.ArtistDetailsViewModel
 import io.music_assistant.client.ui.compose.item.artist.ArtistDetailsViewModel.Section
 import io.music_assistant.client.ui.compose.nav.TopBarLayout
+import io.music_assistant.client.ui.compose.provider.ProviderViewModel
 import io.music_assistant.client.ui.fullBleed
 import io.music_assistant.client.ui.theme.AppTheme
-import io.music_assistant.client.utils.gridItemMinSize
 import kotlinx.coroutines.delay
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.album_disc_header
@@ -134,6 +137,7 @@ fun ItemDetailsScreen(
     itemDetailsViewModel: ItemDetailsViewModel,
     viewModeViewModel: ViewModeViewModel,
     actionsViewModel: ActionsViewModel,
+    providerViewModel: ProviderViewModel,
     onBack: () -> Unit,
     onNavigateToItem: (String, MediaType, String) -> Unit,
     onNavigateToList: (String, ItemList, ClickContext) -> Unit,
@@ -161,10 +165,7 @@ fun ItemDetailsScreen(
         onRemoveFromPlaylist = { id, pos ->
             actionsViewModel.removeFromPlaylist(id, pos, itemDetailsViewModel::reload)
         },
-        providerIconFetcher = { modifier, provider ->
-            actionsViewModel.getProviderIcon(provider)
-                ?.let { ProviderIcon(modifier, it) }
-        },
+        providerIconFetcher = providerViewModel.providerIconFetcher(),
         onPlayClick = itemDetailsViewModel::onPlayClick,
         onChapterClick = itemDetailsViewModel::onChapterClick,
         onChildPlayClick = itemDetailsViewModel::onPlayClick,
@@ -172,6 +173,7 @@ fun ItemDetailsScreen(
         onTabSelected = itemDetailsViewModel::onTabSelected,
         onLoadSimilarArtists = itemDetailsViewModel::loadSimilarArtists,
         onRefreshPlaylist = itemDetailsViewModel::refreshPlaylistTracks,
+        providerDetails = providerViewModel::getProviderDetails,
     )
 }
 
@@ -193,7 +195,7 @@ fun ItemDetails(
     onMarkPlayed: (AppMediaItem) -> Unit = {},
     onMarkUnplayed: (AppMediaItem) -> Unit = {},
     onRemoveFromPlaylist: (String, Int) -> Unit = { _, _ -> },
-    providerIconFetcher: @Composable (Modifier, String) -> Unit = { _, _ -> },
+    providerIconFetcher: ProviderIconFetcher = { _, _, _ -> },
     onPlayClick: (QueueOption, Boolean) -> Unit = { _, _ -> },
     onChapterClick: (Int) -> Unit = {},
     onChildPlayClick: PlayHandler<AppMediaItem> = { _, _, _, _ -> },
@@ -201,6 +203,7 @@ fun ItemDetails(
     onTabSelected: (ItemDetailsTab) -> Unit = {},
     onLoadSimilarArtists: () -> Unit = {},
     onRefreshPlaylist: () -> Unit = {},
+    providerDetails: (String) -> ProviderDetails? = { null },
 ) {
     val playlistActions = object : PlaylistActions {
         override suspend fun getEditablePlaylists(): List<Playlist> {
@@ -290,6 +293,7 @@ fun ItemDetails(
                     onTabSelected = onTabSelected,
                     onLoadSimilarArtists = onLoadSimilarArtists,
                     onRefreshPlaylist = onRefreshPlaylist,
+                    providerDetails = providerDetails,
                 )
             }
 
@@ -318,7 +322,7 @@ private fun ItemContent(
     progressActions: ProgressActions?,
     onRemoveFromPlaylist: (String, Int) -> Unit,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     fetchColors: ExtractedColorsSource?,
     onBack: () -> Unit,
     viewModeProvider: @Composable (MediaType) -> ViewMode,
@@ -328,6 +332,7 @@ private fun ItemContent(
     onTabSelected: (ItemDetailsTab) -> Unit,
     onLoadSimilarArtists: () -> Unit,
     onRefreshPlaylist: () -> Unit,
+    providerDetails: (String) -> ProviderDetails?,
 ) {
     // Tabs, the loading gate, and the selected tab are all derived in ItemDetailsViewModel.State.
     val tabs = state.tabs
@@ -450,6 +455,7 @@ private fun ItemContent(
                         providerIconFetcher = providerIconFetcher,
                         contentPadding = contentPadding,
                         heroSlot = heroSlot,
+                        providerDetails = providerDetails,
                     )
                 }
             } else if (tabs.isEmpty()) {
@@ -616,7 +622,7 @@ private fun TabContent(
     progressActions: ProgressActions?,
     onRemoveFromPlaylist: (String, Int) -> Unit,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
     tabsSlot: @Composable () -> Unit,
@@ -779,7 +785,7 @@ private fun AlbumsTabContent(
     onPlayChildClick: PlayHandler<AppMediaItem>,
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
     tabsSlot: @Composable () -> Unit,
@@ -821,7 +827,7 @@ private fun ArtistsTabContent(
     onNavigateClick: (AppMediaItem) -> Unit,
     onPlayChildClick: PlayHandler<AppMediaItem>,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
     tabsSlot: @Composable () -> Unit,
@@ -864,7 +870,7 @@ private fun PlayablesTabContent(
     progressActions: ProgressActions?,
     onRemoveFromPlaylist: (String, Int) -> Unit,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
     tabsSlot: @Composable () -> Unit,
@@ -956,9 +962,10 @@ private fun ArtistContent(
     onPlayChildClick: PlayHandler<AppMediaItem>,
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable (Modifier, String) -> Unit,
+    providerIconFetcher: ProviderIconFetcher,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
+    providerDetails: (String) -> ProviderDetails?,
 ) {
     val artistDetailsViewModel = koinViewModel<ArtistDetailsViewModel> { parametersOf(artist) }
     val librarySection by artistDetailsViewModel.library.collectAsStateWithLifecycle()
@@ -983,6 +990,7 @@ private fun ArtistContent(
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
                     providerIconFetcher = providerIconFetcher,
+                    providerDetails = providerDetails,
                 )
             }
 
@@ -999,6 +1007,7 @@ private fun ArtistContent(
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
                     providerIconFetcher = providerIconFetcher,
+                    providerDetails = providerDetails,
                 )
             }
 
@@ -1015,6 +1024,7 @@ private fun ArtistContent(
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
                     providerIconFetcher = providerIconFetcher,
+                    providerDetails = providerDetails,
                 )
             }
         }
@@ -1033,8 +1043,13 @@ private fun <T : AppMediaItem> SectionRow(
     onPlayChildClick: PlayHandler<AppMediaItem>,
     playlistActions: PlaylistActions,
     libraryActions: LibraryActions,
-    providerIconFetcher: @Composable ((Modifier, String) -> Unit),
+    providerIconFetcher: ProviderIconFetcher,
+    providerDetails: (String) -> ProviderDetails?,
 ) {
+    val providerNameDisplayString: (String) -> DisplayString = { domain ->
+        (providerDetails(domain)?.name ?: domain).toDisplayString()
+    }
+
     CategoryRow(
         data = sectionData,
         containerItem = artist,
@@ -1046,9 +1061,9 @@ private fun <T : AppMediaItem> SectionRow(
                 list = section.itemList,
                 filter = if (section.providerFilter != null) {
                     ItemCategory.Filter(
-                        label = section.providerFilter.current.providerDomain.toDisplayString(),
+                        label = providerNameDisplayString(section.providerFilter.current.providerDomain),
                         options = section.providerFilter.options,
-                        labelTransform = { it.providerDomain.toDisplayString() },
+                        labelTransform = { providerNameDisplayString(it.providerDomain) },
                         contentDescription = Res.string.cd_provider_filter,
                     )
                 } else {

@@ -76,6 +76,7 @@ import io.music_assistant.client.ui.compose.common.items.navigationOptions
 import io.music_assistant.client.ui.compose.common.items.resolveDetailOverflowActions
 import io.music_assistant.client.ui.compose.common.items.toOverflowOption
 import io.music_assistant.client.ui.compose.common.painters.rememberPlaceholderPainter
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
 import io.music_assistant.client.ui.contentColorByLuminance
 import io.music_assistant.client.ui.fadingEdges
 import io.music_assistant.client.ui.inactive
@@ -95,7 +96,7 @@ fun ItemHeader(
         MaterialTheme.colorScheme.primaryContainer,
         MaterialTheme.colorScheme.primary,
     ),
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)? = null,
+    providerIconFetcher: ProviderIconFetcher? = null,
     onPlayClick: (QueueOption, Boolean) -> Unit = { _, _ -> },
     // Android TV: the detail screen lands initial focus on the play button via this requester and
     // tracks its success through [playButtonFocused].
@@ -352,7 +353,7 @@ private fun ItemText(
 @Composable
 private fun Image(
     item: AppMediaItem,
-    providerIconFetcher: @Composable ((Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     Box(
         modifier = Modifier

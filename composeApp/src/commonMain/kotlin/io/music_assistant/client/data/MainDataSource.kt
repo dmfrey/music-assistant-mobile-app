@@ -3,7 +3,6 @@
 
 package io.music_assistant.client.data
 
-import androidx.compose.ui.graphics.Color
 import co.touchlab.kermit.Logger
 import io.music_assistant.client.api.APICommands
 import io.music_assistant.client.api.Request
@@ -17,6 +16,7 @@ import io.music_assistant.client.data.model.client.Player
 import io.music_assistant.client.data.model.client.PlayerData
 import io.music_assistant.client.data.model.client.Queue
 import io.music_assistant.client.data.model.client.QueueInfo
+import io.music_assistant.client.data.model.client.byId
 import io.music_assistant.client.data.model.client.isBefore
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.LongFormSeekDefaults
@@ -26,7 +26,6 @@ import io.music_assistant.client.data.model.server.AI_RADIO_DOMAIN
 import io.music_assistant.client.data.model.server.AI_RADIO_REQUIRED_SCOPE
 import io.music_assistant.client.data.model.server.DspConfig
 import io.music_assistant.client.data.model.server.DspConfigPreset
-import io.music_assistant.client.data.model.server.ProviderManifest
 import io.music_assistant.client.data.model.server.ServerPlayer
 import io.music_assistant.client.data.model.server.ServerProviderInstance
 import io.music_assistant.client.data.model.server.ServerQueue
@@ -51,8 +50,6 @@ import io.music_assistant.client.ui.compose.common.DataState
 import io.music_assistant.client.ui.compose.common.StaleReason
 import io.music_assistant.client.ui.compose.common.action.PlayerAction
 import io.music_assistant.client.ui.compose.common.action.QueueAction
-import io.music_assistant.client.ui.compose.common.icons.BookshelfIcon
-import io.music_assistant.client.ui.compose.common.providers.ProviderIconModel
 import io.music_assistant.client.utils.AuthProcessState
 import io.music_assistant.client.utils.DataConnectionState
 import io.music_assistant.client.utils.HasConnectionData
@@ -122,6 +119,7 @@ class MainDataSource(
     /** Combined inputs for a [MainDataSource] player-data rebuild. */
     private data class PlayerBuildInputs(
         val players: DataState<List<Player>>,
+        val sortedIds: List<String>?,
         val queues: List<QueueInfo>,
         val localData: PlayerData?,
         val favoriteOverrides: Map<String, Boolean>,
@@ -138,7 +136,6 @@ class MainDataSource(
 
     private val _serverPlayers = MutableStateFlow<DataState<List<Player>>>(DataState.Loading())
     private val _queueInfos = MutableStateFlow<List<QueueInfo>>(emptyList())
-    private val _providersIcons = MutableStateFlow<Map<String, ProviderIconModel>>(emptyMap())
 
     /**
      * Whether the AI Radio UI may be offered: the optional `ai_radio` plugin is loaded AND
@@ -158,47 +155,6 @@ class MainDataSource(
      * [buildPlayerDataList] so queue updates can't clobber it.
      */
     private val _favoriteOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
-
-    private val _players =
-        combine(_serverPlayers, settings.playersSorting) { playersState, sortedIds ->
-            when (playersState) {
-                is DataState.Error,
-                is DataState.Loading,
-                is DataState.NoData,
-                    -> playersState
-
-                is DataState.Data -> {
-                    val players = playersState.data
-                    DataState.Data(
-                        sortedIds?.let {
-                            players.sortedBy { player ->
-                                sortedIds.indexOf(player.id).takeIf { it >= 0 }
-                                    ?: Int.MAX_VALUE
-                            }
-                        } ?: players.sortedBy { player -> player.name },
-                    )
-                }
-
-                is DataState.Stale -> {
-                    // Preserve stale state with sorted data
-                    val players = playersState.data
-                    DataState.Stale(
-                        data = sortedIds?.let {
-                            players.sortedBy { player ->
-                                sortedIds.indexOf(player.id).takeIf { it >= 0 }
-                                    ?: Int.MAX_VALUE
-                            }
-                        } ?: players.sortedBy { player -> player.name },
-                        disconnectedAt = playersState.disconnectedAt,
-                        reason = playersState.reason,
-                    )
-                }
-            }
-        }.stateIn(
-            scope = this,
-            started = SharingStarted.Eagerly,
-            initialValue = DataState.Loading(),
-        )
 
     private val _playersData = MutableStateFlow<DataState<List<PlayerData>>>(DataState.Loading())
     val playersData = _playersData.asStateFlow()
@@ -296,6 +252,12 @@ class MainDataSource(
             )
         }.stateIn(this, SharingStarted.Eagerly, settings.lastSelectedPlayerId.value)
 
+    /**
+     * Public view of the effective selection. Consumers that pair it with a player list
+     * must resolve the index against that same list, not read [selectedPlayerIndex].
+     */
+    val selectedPlayerId: StateFlow<String?> = _selectedPlayerId
+
     val selectedPlayerIndex = combine(_playersData, _selectedPlayerId) { listState, selectedId ->
         selectedId?.let { id ->
             (listState as? DataState.Data)?.data?.indexOfFirst { it.playerId == id }
@@ -304,9 +266,7 @@ class MainDataSource(
     }.stateIn(this, SharingStarted.Eagerly, null)
 
     val selectedPlayer: PlayerData?
-        get() = selectedPlayerIndex.value?.let { selectedIndex ->
-            (_playersData.value as? DataState.Data)?.data?.getOrNull(selectedIndex)
-        }
+        get() = _selectedPlayerId.value?.let { id -> (_playersData.value as? DataState.Data)?.data?.byId(id) }
 
     // --- Canonical media-session "now playing" source ---
     // Single source of truth for what the MediaSession / notification presents,
@@ -348,9 +308,6 @@ class MainDataSource(
         selectPlayer(playing.player)
         return true
     }
-
-    fun providerIcon(provider: String): ProviderIconModel? =
-        _providersIcons.value[provider.substringBefore("--")]
 
     private var watchJob: Job? = null
     private var updateJob: Job? = null
@@ -396,12 +353,13 @@ class MainDataSource(
 
         launch {
             combine(
-                _players,
+                _serverPlayers,
+                settings.playersSorting,
                 _queueInfos,
                 localPlayerController.localPlayerData,
                 _favoriteOverrides,
-            ) { players, queues, localData, favOverrides ->
-                PlayerBuildInputs(players, queues, localData, favOverrides)
+            ) { players, sortedIds, queues, localData, favOverrides ->
+                PlayerBuildInputs(players, sortedIds, queues, localData, favOverrides)
             }
                 .debounce(Timings.EVENT_DEBOUNCE) // Small debounce to batch rapid updates, but don't delay initial load
                 .collect { input ->
@@ -414,6 +372,7 @@ class MainDataSource(
                                 is DataState.Data -> DataState.Data(
                                     buildPlayerDataList(
                                         input.players.data,
+                                        input.sortedIds,
                                         input.queues,
                                         input.localData,
                                         input.favoriteOverrides,
@@ -471,7 +430,6 @@ class MainDataSource(
                                             _serverPlayers.update {
                                                 DataState.Data(currentState.data)
                                             }
-                                            updateProvidersManifests()
                                             updateUserPreferences()
                                             updateAiRadioAvailability()
                                             updatePlayersAndQueues()
@@ -482,7 +440,6 @@ class MainDataSource(
                                 is DataState.Data -> {
                                     // Already have data (shouldn't happen, but handle gracefully)
                                     log.w { "Connected while already in Data state - refreshing anyway" }
-                                    updateProvidersManifests()
                                     updateUserPreferences()
                                     updateAiRadioAvailability()
                                     updatePlayersAndQueues()
@@ -495,7 +452,6 @@ class MainDataSource(
                                 is DataState.Loading, is DataState.NoData, is DataState.Error -> {
                                     // Fresh connection or error recovery - show loading
                                     _serverPlayers.update { DataState.Loading() }
-                                    updateProvidersManifests()
                                     updateUserPreferences()
                                     updateAiRadioAvailability()
                                     updatePlayersAndQueues()
@@ -751,13 +707,19 @@ class MainDataSource(
      * Local player uses repository state (single source of truth); others built from server data.
      */
     private fun buildPlayerDataList(
-        allPlayers: List<Player>,
+        serverPlayers: List<Player>,
+        sortedIds: List<String>?,
         queues: List<QueueInfo>,
         localData: PlayerData?,
         favoriteOverrides: Map<String, Boolean>,
         oldValues: DataState<List<PlayerData>>,
     ): List<PlayerData> {
         val localPlayerId = settings.sendspinEffectivePlayerId.value
+        // User's saved order (unknown players last, in server order); name order until one is saved.
+        val allPlayers = sortedIds?.let {
+            serverPlayers.sortedBy { player -> sortedIds.indexOf(player.id).takeIf { it >= 0 } ?: Int.MAX_VALUE }
+        } ?: serverPlayers.sortedBy { it.name }
+        val oldPlayers = (oldValues as? DataState.Data)?.data.orEmpty()
         val playerDataList = allPlayers
             .map { player ->
                 val isLocal = player.id == localPlayerId
@@ -775,7 +737,7 @@ class MainDataSource(
                         allPlayers.filter { it.isAvailable }
                             .mapNotNull { it.asChildBindFor(player) }
                     }
-                if (isLocal && localData != null) {
+                val fresh = if (isLocal && localData != null) {
                     // Repository is source of truth for the local player; surface the
                     // latest server-anchored `elapsedTime` from `_queueInfos` so the slider
                     // re-anchors on `QueueTimeUpdatedEvent` (which writes only to
@@ -784,7 +746,7 @@ class MainDataSource(
                     val trackedElapsed = queues.find {
                         it.id == player.queueId || it.id == localPlayerId
                     }?.elapsedTime
-                    val withPosition = trackedElapsed?.let {
+                    trackedElapsed?.let {
                         (localData.queue as? DataState.Data)?.let { qd ->
                             localData.copy(
                                 queue = DataState.Data(
@@ -794,12 +756,8 @@ class MainDataSource(
                             )
                         }
                     } ?: localData
-                    // Preserve loaded queue items from previous state
-                    (oldValues as? DataState.Data)?.data
-                        ?.firstOrNull { it.player.id == player.id }
-                        ?.updateFrom(withPosition) ?: withPosition
                 } else {
-                    val newData = PlayerData(
+                    PlayerData(
                         player = player,
                         queue = queues.find { it.id == player.queueId }
                             ?.let { queueInfo ->
@@ -811,19 +769,15 @@ class MainDataSource(
                         childrenBinds = groupChildren,
                         isLocal = isLocal,
                     )
-                    (oldValues as? DataState.Data)?.data
-                        ?.firstOrNull { it.player.id == player.id }
-                        ?.updateFrom(newData) ?: newData
                 }
+                // Preserve loaded queue items from previous state
+                oldPlayers.firstOrNull { it.player.id == player.id }?.updateFrom(fresh) ?: fresh
             }
 
-        // Inject synthetic local player if not in server list
-        val withLocal =
-            if (localData != null && playerDataList.none { it.playerId == localPlayerId }) {
-                listOf(localData) + playerDataList
-            } else {
-                playerDataList
-            }
+        // The local player is pinned first regardless of the saved order, whether the server
+        // lists it or it is still the synthetic stand-in (SelectPlayerDialog won't move it).
+        val (serverLocal, others) = playerDataList.partition { it.isLocal }
+        val withLocal = serverLocal.ifEmpty { listOfNotNull(localData) } + others
         // Fill any null now-playing artwork from the queue track, then re-apply favorite
         // overrides last so the stale queue payload can't win. The two patches are
         // independent (currentMedia vs queue.currentItem.track.favorite), so order is free.
@@ -1599,7 +1553,7 @@ class MainDataSource(
      */
     private fun updateAiRadioAvailability() {
         launch {
-            val pluginLoaded = apiClient.sendRequest(Request.Library.providers())
+            val pluginLoaded = apiClient.sendRequest(Request.Provider.all())
                 .resultAs<List<ServerProviderInstance>>()
                 ?.any { it.domain == AI_RADIO_DOMAIN && it.available } == true
             if (!pluginLoaded) {
@@ -1611,27 +1565,6 @@ class MainDataSource(
                 .orEmpty()
             val role = (apiClient.sessionState.value as? HasConnectionData)?.user?.role
             _aiRadioAvailable.value = grantsScope(roleScopes, role, AI_RADIO_REQUIRED_SCOPE)
-        }
-    }
-
-    private fun updateProvidersManifests() {
-        launch {
-            apiClient.sendRequest(Request.Library.providersManifests())
-                .resultAs<List<ProviderManifest>>()?.filter { it.type == "music" }
-                ?.let { manifests ->
-                    val map = buildMap {
-                        put(
-                            "library",
-                            ProviderIconModel.Mdi(BookshelfIcon, Color.White),
-                        )
-                        manifests.forEach { manifest ->
-                            ProviderIconModel.from(manifest.icon, manifest.iconSvgDark)?.let {
-                                put(manifest.domain, it)
-                            }
-                        }
-                    }
-                    _providersIcons.update { map }
-                }
         }
     }
 

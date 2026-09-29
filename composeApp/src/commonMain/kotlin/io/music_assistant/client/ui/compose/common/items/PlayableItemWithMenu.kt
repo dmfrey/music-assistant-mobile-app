@@ -28,6 +28,7 @@ import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.ConfirmationDialog
 import io.music_assistant.client.ui.compose.common.MenuItem
 import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
+import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
 import io.music_assistant.client.ui.compose.common.tvFocusRing
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.action_remove
@@ -48,7 +49,7 @@ fun TrackWithMenu(
     playlistActions: PlaylistActions? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     PlayableItemWithMenu(
@@ -96,7 +97,7 @@ fun PodcastEpisodeWithMenu(
     onRemoveFromPlaylist: (() -> Unit)? = null,
     libraryActions: LibraryActions,
     progressActions: ProgressActions? = null,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
 ) {
     PlayableItemWithMenu(
         modifier = when (viewMode) {
@@ -139,7 +140,7 @@ fun RadioWithMenu(
     playlistActions: PlaylistActions? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
     libraryActions: LibraryActions,
-    providerIconFetcher: (@Composable (Modifier, String) -> Unit)?,
+    providerIconFetcher: ProviderIconFetcher?,
     firstItemFocusRequester: FocusRequester? = null,
 ) {
     PlayableItemWithMenu(
