@@ -12,6 +12,14 @@ interface SendspinPlayer {
 
     /** UI-meaningful occurrences only. Buffered; a slow collector loses the oldest. */
     val events: Flow<PlayerEvent>
+
+    /**
+     * Local pause, with no server round trip: while held the player makes no
+     * sound and discards the audio it gets. Stream messages still apply, so a
+     * release plays the next audio the server sends. The hold outlives
+     * reconnects and enable cycles; only the app releases it.
+     */
+    fun hold(held: Boolean)
 }
 
 /**
@@ -35,10 +43,16 @@ class SendspinDeps(
     val approvePairing: suspend (pairingToken: String) -> Unit,
     /** Where the audio loop runs: one thread, high priority where the platform allows. */
     val audioDispatcher: CoroutineDispatcher,
+    /** Reported as `device_info.software_version`, so the server names the app version in its logs. */
+    val softwareVersion: String,
     val clock: MonotonicClock = SystemMonotonicClock,
 )
 
-/** Local monotonic time in microseconds. Injected so tests can drive it. */
+/**
+ * Local monotonic time in microseconds. Injected so tests can drive it. A production clock
+ * must tick through device sleep: the server offset is learned against it, and a clock that
+ * pauses in a doze is off by the whole sleep when playback resumes.
+ */
 fun interface MonotonicClock {
     fun nowMicros(): Long
 }

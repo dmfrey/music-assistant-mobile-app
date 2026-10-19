@@ -41,6 +41,12 @@ The Settings screen adapts its UI based on connection and authentication state:
 
 ### ServerConnectionSection
 - Text fields for host, port, and TLS checkbox
+- Client certificate row (mTLS), shown when TLS is on. `ClientCertificateSetting` is an expect composable:
+  - Android: **Choose** opens the system KeyChain chooser. The chooser lists the certificates that the user installed in Android settings.
+  - iOS: **Choose** opens the document picker for a `.p12` file. A dialog asks for the file password. The app imports the identity into the Keychain.
+  - **Clear** removes the selection. On iOS, it also deletes the Keychain identity.
+  - The app keeps one certificate for all servers. It sends the certificate only to a server that asks for one.
+  - OAuth login on iOS uses `ASWebAuthenticationSession`, which cannot use the imported identity. For OAuth behind mTLS, install the certificate as an iOS profile too.
 - Shows "Credentials present" badge when token exists
 - Connect button
 
@@ -79,18 +85,36 @@ The Settings screen adapts its UI based on connection and authentication state:
 4. On failure: Error message displayed below login form
 
 ### OAuth Authentication (e.g., HomeAssistant)
-1. User clicks "Authorize with [Provider]" button
-2. OAuth browser window opens (app goes to background)
-3. User completes OAuth flow in browser
-4. Deep link callback returns to app
-5. AuthenticationManager waits up to 10 seconds for websocket reconnection
-6. Once connected, authorization completes
-7. UI updates to State 4
+1. The user clicks the "Authorize with [Provider]" button.
+2. The provider page opens. Android uses a Custom Tab. iOS uses an `ASWebAuthenticationSession`.
+3. The user signs in on the provider page.
+4. The browser opens `musicassistant://auth/callback`, and the app gets the deep link.
+5. `AuthenticationManager` keeps the result until the session is in `AwaitingAuth`, then it authorizes.
+6. The UI changes to State 4.
 
-**OAuth Reconnection Logic:**
-- Polls connection state every 250ms
-- Checks for both `SessionState.Connected` AND `serverInfo != null`
-- Times out after 10 seconds with error message
+The callback has two forms:
+- Without `state`: the server callback page completed the sign-in. The `code` parameter is the access token.
+- With `state` (server 2.11, Remote Access): the browser returned through the `app.music-assistant.io`
+  callback page. The `code` parameter is a provider code. The app sends it to `auth/exchange` with its
+  PKCE verifier, and the server returns the access token.
+
+The app uses the second form if all of these conditions are true:
+- The session is a WebRTC (Remote Access) session.
+- The server schema is `SERVER_2_11_SCHEMA` or higher (`supportsAppSignIn`).
+- `auth/providers` sets `supports_remote_app` for the provider.
+
+Otherwise the app uses the first form, as on server 2.10. The second form does not need an External URL
+on the server, because the browser does not open the server. The browser opens Home Assistant only.
+
+Over Remote Access, the app hides a redirect provider if the browser cannot come back. The browser can
+come back if the app uses the second form, or if the server has an External URL. Without one of these,
+the server callback is an internal address. `AuthenticationManager.getProviders` removes the provider,
+as the web frontend does.
+
+Only the app run that started the sign-in has the verifier. A code for an unknown `state` fails.
+The server accepts a code one time, so the token replaces the code after the exchange.
+A retry after a reconnect sends the token again, and does not send the exchange again.
+If the app does not use the result in 20 seconds, it shows "Connection timeout. Please try again."
 
 ## Logout Behavior
 
@@ -140,8 +164,11 @@ The Settings screen adapts its UI based on connection and authentication state:
 - Error messages persist until next successful auth or state change
 
 ### OAuth Errors
+- Server refuses to start the sign-in: Error message from `auth/authorization_url`
 - Connection timeout: "Connection timeout. Please try again."
 - Authorization failure: Error message from server
+- Exchange failure: Error message from `auth/exchange`
+- Code for an unknown sign-in: "This sign-in has expired. Please try again."
 - No connection: "Connection lost. Please try again."
 
 ## Sendspin Integration

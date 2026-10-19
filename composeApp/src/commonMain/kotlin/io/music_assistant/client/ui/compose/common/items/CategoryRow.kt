@@ -58,6 +58,7 @@ import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.Artist
 import io.music_assistant.client.data.model.client.items.Audiobook
 import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
 import io.music_assistant.client.data.model.client.items.Playlist
 import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.data.model.client.items.PodcastEpisode
@@ -71,6 +72,7 @@ import io.music_assistant.client.ui.compose.grid.GridItem
 import io.music_assistant.client.ui.compose.grid.gridItemMinSize
 import io.music_assistant.client.ui.compose.item.ItemList
 import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.action_view_all
 import musicassistantclient.composeapp.generated.resources.cd_view_all
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
@@ -235,6 +237,7 @@ fun CategoryRow(
                     is Album -> "Album"
                     is Playlist -> "Playlist"
                     is Audiobook -> "Audiobook"
+                    is MediaCollection -> "Collection"
                     is Podcast -> "Podcast"
                     is PodcastEpisode -> "Episode"
                     is RadioStation -> "RadioStation"
@@ -263,6 +266,8 @@ fun CategoryRow(
                     playlistActions = playlistActions,
                     libraryActions = libraryActions,
                     providerIconFetcher = providerIconFetcher,
+                    // Inside an artist the artist name repeats on every album, so show the year.
+                    subtitle = if (containerItem is Artist) AlbumSubtitle.YEAR else AlbumSubtitle.ARTISTS,
                     firstItemFocusRequester = itemFocusRequester,
                 )
 
@@ -313,6 +318,14 @@ fun CategoryRow(
                     progressActions = progressActions,
                     providerIconFetcher = providerIconFetcher,
                     firstItemFocusRequester = itemFocusRequester,
+                )
+
+                // Audiobookshelf "Continue series" / "Recent series" rows.
+                is MediaCollection -> MediaCollectionWithMenu(
+                    item = item,
+                    onNavigateClick = onNavigateClick,
+                    onPlayOption = onPlayClick,
+                    libraryActions = libraryActions,
                 )
 
                 is RadioStation -> RadioWithMenu(
@@ -426,7 +439,7 @@ private fun ViewAllButton(
             onNavigateToList(rowTitle, itemList)
         },
     ) {
-        Text("View all")
+        Text(stringResource(Res.string.action_view_all))
     }
 }
 

@@ -191,15 +191,17 @@ object ServerMediaItemFixtures {
     }
 
     fun provider(
-        domain: String = DEFAULT_PROVIDER_DOMAIN,
-        instance: String = DEFAULT_PROVIDER_INSTANCE,
-        name: String = domain,
+        domain: String = "domain-${uniqueIdGenerator.nextInt()}",
+        instance: String = uniqueIdGenerator.nextInt().toString(),
+        name: String = "Provider $instance",
+        supportedFeatures: List<String> = emptyList(),
     ): ServerProviderInstance {
         return ServerProviderInstance(
             domain = domain,
             instanceId = instance,
             name = name,
             type = "music",
+            supportedFeatures = supportedFeatures,
         )
     }
 

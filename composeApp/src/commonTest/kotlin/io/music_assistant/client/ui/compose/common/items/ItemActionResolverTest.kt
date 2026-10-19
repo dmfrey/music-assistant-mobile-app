@@ -2,6 +2,7 @@ package io.music_assistant.client.ui.compose.common.items
 
 import io.music_assistant.client.data.model.client.ClickContext
 import io.music_assistant.client.data.model.client.QueueOption
+import io.music_assistant.client.data.model.client.items.RecommendationFolder
 import io.music_assistant.client.data.model.client.testPodcastEpisode
 import io.music_assistant.client.data.model.client.testTrack
 import musicassistantclient.composeapp.generated.resources.Res
@@ -16,6 +17,7 @@ import kotlin.test.assertTrue
 class ItemActionResolverTest {
     private fun longClick(defaultAction: ItemAction?) = resolveLongClickActions(
         item = testTrack(),
+        canEditLibrary = true,
         librarySupported = false,
         canAddToPlaylist = false,
         canRemoveFromPlaylist = false,
@@ -84,5 +86,84 @@ class ItemActionResolverTest {
     @Test
     fun `play-button overflow is empty for a non-playable item`() {
         assertEquals(emptyList(), resolvePlayButtonActions(testTrack(isPlayable = false), default = null))
+    }
+
+    @Test
+    fun `a playable browse folder offers exactly the four queue options`() {
+        val folder = RecommendationFolder(
+            itemId = "audio/disc1",
+            provider = "fs",
+            name = "Disc 1",
+            uri = "fs://folder/audio/disc1",
+            images = emptyMap(),
+            isPlayable = true,
+        )
+        val actions = resolveLongClickActions(
+            item = folder,
+            clickContext = ClickContext.BROWSE,
+            canEditLibrary = true,
+            librarySupported = false,
+            canAddToPlaylist = false,
+            canRemoveFromPlaylist = false,
+            progressSupported = false,
+        )
+        assertEquals(
+            listOf(QueueOption.REPLACE, QueueOption.PLAY, QueueOption.NEXT, QueueOption.ADD)
+                .map { ItemAction.Play(it) },
+            actions,
+        )
+    }
+
+    private val libraryWrites = setOf(
+        ItemAction.AddToLibrary,
+        ItemAction.RemoveFromLibrary,
+        ItemAction.Favorite,
+        ItemAction.Unfavorite,
+        ItemAction.AddToPlaylist,
+        ItemAction.RemoveFromPlaylist,
+        ItemAction.MarkPlayed,
+        ItemAction.MarkUnplayed,
+    )
+
+    private fun longClickWrites(canEditLibrary: Boolean) = resolveLongClickActions(
+        item = testPodcastEpisode(),
+        canEditLibrary = canEditLibrary,
+        librarySupported = true,
+        canAddToPlaylist = true,
+        canRemoveFromPlaylist = true,
+        progressSupported = true,
+    ).filter { it in libraryWrites }
+
+    @Test
+    fun `long-click menu offers library writes only with library write scope`() {
+        assertTrue(longClickWrites(canEditLibrary = true).isNotEmpty())
+        assertEquals(emptyList(), longClickWrites(canEditLibrary = false))
+    }
+
+    @Test
+    fun `long-click menu keeps playback actions without library write scope`() {
+        val actions = resolveLongClickActions(
+            item = testTrack(),
+            canEditLibrary = false,
+            librarySupported = true,
+            canAddToPlaylist = true,
+            canRemoveFromPlaylist = true,
+            progressSupported = true,
+        )
+        assertTrue(ItemAction.Play(QueueOption.REPLACE) in actions)
+    }
+
+    @Test
+    fun `detail overflow is empty without library write scope`() {
+        val overflow = { canEditLibrary: Boolean ->
+            resolveDetailOverflowActions(
+                item = testTrack(),
+                canEditLibrary = canEditLibrary,
+                librarySupported = true,
+                canAddToPlaylist = true,
+            )
+        }
+        assertTrue(overflow(true).isNotEmpty())
+        assertEquals(emptyList(), overflow(false))
     }
 }

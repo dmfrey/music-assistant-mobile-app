@@ -15,7 +15,7 @@ data class ServerQueue(
     // @SerialName("active") val active: Boolean,
     // @SerialName("display_name") val displayName: String,
     @SerialName("available") val available: Boolean = false,
-    // @SerialName("items") val items: Int,
+    @SerialName("items") val items: Int? = null,
     @SerialName("shuffle_enabled") val shuffleEnabled: Boolean = false,
     @SerialName("repeat_mode") val repeatMode: String? = null,
     /**
@@ -50,10 +50,30 @@ data class ServerQueue(
      * so `null` means "speed control unavailable" and the UI hides the speed button.
      */
     @SerialName("playback_speed") val playbackSpeed: Double? = null,
+    /**
+     * Audio overlay: a looping sound effect the server mixes into the queue stream. Null
+     * [overlayEnabled] means the server has no overlay support, which gates the UI.
+     * [overlaySource] stays set while the overlay is off, so it can be re-enabled as is.
+     * [overlayVolume] is relative to the music in percent (100 = equally loud).
+     */
+    @SerialName("overlay_enabled") val overlayEnabled: Boolean? = null,
+    @SerialName("overlay_source") val overlaySource: ServerMediaItem? = null,
+    @SerialName("overlay_volume") val overlayVolume: Int? = null,
     // @SerialName("state") val state: PlayerState,
     @SerialName("current_item") val currentItem: ServerQueueItem? = null,
     // @SerialName("next_item") val nextItem: QueueItem? = null,
     @SerialName("radio_source") val radioSource: List<ServerMediaItem>? = null,
     // @SerialName("flow_mode") val flowMode: Boolean,
     // @SerialName("resume_pos") val resumePos: Double?
+    @SerialName("extra_attributes") val extraAttributes: ServerQueueExtraAttributes? = null,
+)
+
+/** The keys of the free-form `extra_attributes` map that the client reads; the rest are ignored. */
+@Serializable
+data class ServerQueueExtraAttributes(
+    /**
+     * True while the server runs a play action on the queue (`play_media`, `play_index`, ...),
+     * from any client. The server pushes a queue update when it turns on and when it turns off.
+     */
+    @SerialName("play_action_in_progress") val playActionInProgress: Boolean = false,
 )

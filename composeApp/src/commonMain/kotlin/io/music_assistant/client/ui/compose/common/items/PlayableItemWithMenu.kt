@@ -20,12 +20,14 @@ import androidx.compose.ui.semantics.semantics
 import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.itemKind
 import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.AudioSource
 import io.music_assistant.client.data.model.client.items.PlayableItem
 import io.music_assistant.client.data.model.client.items.PodcastEpisode
 import io.music_assistant.client.data.model.client.items.RadioStation
 import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.ConfirmationDialog
+import io.music_assistant.client.ui.compose.common.LocalGrantedScopes
 import io.music_assistant.client.ui.compose.common.MenuItem
 import io.music_assistant.client.ui.compose.common.RemoveFromLibraryConfirmationDialog
 import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
@@ -156,7 +158,7 @@ fun RadioWithMenu(
         firstItemFocusRequester = firstItemFocusRequester,
         itemComposable = { mod, onClick, onLongClick ->
             when (viewMode) {
-                ViewMode.LIST -> RadioRowItem(
+                ViewMode.LIST -> LiveStreamRowItem(
                     modifier = mod,
                     item = item,
                     onClick = onClick,
@@ -164,7 +166,45 @@ fun RadioWithMenu(
                     providerIconFetcher = providerIconFetcher,
                 )
 
-                ViewMode.GRID -> RadioGridItem(
+                ViewMode.GRID -> LiveStreamGridItem(
+                    modifier = mod,
+                    item = item,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    providerIconFetcher = providerIconFetcher,
+                )
+            }
+        },
+    )
+}
+
+@Composable
+fun AudioSourceWithMenu(
+    item: AudioSource,
+    viewMode: ViewMode = ViewMode.GRID,
+    onPlayOption: PlayHandler<AudioSource>,
+    libraryActions: LibraryActions,
+    providerIconFetcher: ProviderIconFetcher?,
+) {
+    PlayableItemWithMenu(
+        modifier = when (viewMode) {
+            ViewMode.GRID -> Modifier
+            ViewMode.LIST -> Modifier.fillMaxWidth()
+        },
+        item = item,
+        onPlayOption = onPlayOption,
+        libraryActions = libraryActions,
+        itemComposable = { mod, onClick, onLongClick ->
+            when (viewMode) {
+                ViewMode.LIST -> LiveStreamRowItem(
+                    modifier = mod,
+                    item = item,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                    providerIconFetcher = providerIconFetcher,
+                )
+
+                ViewMode.GRID -> LiveStreamGridItem(
                     modifier = mod,
                     item = item,
                     onClick = onClick,
@@ -214,6 +254,7 @@ private fun <T> PlayableItemWithMenu(
     val actions = resolveLongClickActions(
         item = item,
         clickContext = clickActionConfig.context,
+        canEditLibrary = LocalGrantedScopes.current.canEditLibrary,
         librarySupported = true,
         canAddToPlaylist = playlistActions != null && item.supportsAddToPlaylist,
         canRemoveFromPlaylist = onRemoveFromPlaylist != null,

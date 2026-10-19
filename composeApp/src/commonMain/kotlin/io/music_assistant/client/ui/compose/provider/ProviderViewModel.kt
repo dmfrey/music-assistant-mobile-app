@@ -8,7 +8,7 @@ import io.music_assistant.client.api.Request
 import io.music_assistant.client.api.ServiceClient
 import io.music_assistant.client.data.model.client.ProviderDetails
 import io.music_assistant.client.data.model.server.ServerMediaItem
-import io.music_assistant.client.data.model.server.ServerProviderInstance
+import io.music_assistant.client.data.repository.ProviderRepository
 import io.music_assistant.client.ui.compose.common.icons.BookshelfIcon
 import io.music_assistant.client.ui.compose.common.providers.ProviderIconModel
 import io.music_assistant.client.utils.getOrPut
@@ -17,24 +17,28 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
-class ProviderViewModel(private val serviceClient: ServiceClient) : ViewModel() {
-    private val providerDetails = mutableMapOf<String, ProviderDetails>()
+class ProviderViewModel(
+    private val serviceClient: ServiceClient,
+    providerRepository: ProviderRepository,
+) : ViewModel() {
+    private var providerDetailsByDomain = emptyMap<String, ProviderDetails>()
+    private var providerDetailsByInstanceId = emptyMap<String, ProviderDetails>()
     private val providerIconsCache = LruCache<String, ProviderIconModel>(10)
 
     init {
         viewModelScope.launch {
-            serviceClient.sendRequest(Request.Provider.all())
-                .resultAs<List<ServerProviderInstance>>()?.filter { it.type == "music" }
-                ?.let { manifests ->
-                    manifests.forEach {
-                        providerDetails[it.domain] = ProviderDetails(it.name)
-                    }
-                }
+            providerRepository.providers.collect { state ->
+                // A failed fetch or a sign-out keeps the names: they only label items.
+                val named = state.dataOrNull?.filter { it.type in NAMED_PROVIDER_TYPES } ?: return@collect
+                providerDetailsByDomain = named.associate { it.domain to ProviderDetails(it.name) }
+                providerDetailsByInstanceId = named.associate { it.instanceId to ProviderDetails(it.name) }
+            }
         }
     }
 
-    fun getProviderDetails(domain: String): ProviderDetails? {
-        return providerDetails[domain]
+    fun getProviderDetails(domainOrInstanceId: String): ProviderDetails? {
+        return providerDetailsByDomain[domainOrInstanceId]
+            ?: providerDetailsByInstanceId[domainOrInstanceId]
     }
 
     fun getProviderIcon(domain: String, variant: String): StateFlow<ProviderIconModel?> {
@@ -68,5 +72,10 @@ class ProviderViewModel(private val serviceClient: ServiceClient) : ViewModel() 
             darkIconResult ?: serviceClient.sendRequest(Request.Provider.icon(domain))
                 .resultAs<String>()
         return iconSvg
+    }
+
+    private companion object {
+        // Metadata and plugin providers (e.g. Last.fm) are artist top-tracks sources.
+        val NAMED_PROVIDER_TYPES = setOf("music", "metadata", "plugin")
     }
 }

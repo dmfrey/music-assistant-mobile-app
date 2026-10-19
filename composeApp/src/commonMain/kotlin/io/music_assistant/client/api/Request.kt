@@ -8,10 +8,13 @@ import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.RepeatMode
 import io.music_assistant.client.data.model.client.items.MarkableItem
 import io.music_assistant.client.data.model.server.DspConfig
+import io.music_assistant.client.data.model.server.ListSort
+import io.music_assistant.client.data.model.server.SortWire
 import io.music_assistant.client.utils.myJson
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,6 +36,17 @@ private fun JsonObjectBuilder.putListFilters(
         ?.let { put("provider", JsonArray(it.map { p -> JsonPrimitive(p) })) }
     genres?.takeIf { it.isNotEmpty() }
         ?.let { put("genre", JsonArray(it.map { g -> JsonPrimitive(g) })) }
+}
+
+private fun JsonObjectBuilder.putSort(sort: ListSort?) {
+    when (sort?.wire) {
+        SortWire.ORDER_BY -> put("order_by", JsonPrimitive(sort.option.toServerString()))
+        SortWire.SORT_FIELD -> {
+            put("sort_field", JsonPrimitive(sort.option.field.serverKey))
+            put("sort_direction", JsonPrimitive(if (sort.option.descending) "desc" else "asc"))
+        }
+        null -> Unit
+    }
 }
 
 @Serializable
@@ -174,6 +188,49 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 put("player_id", JsonPrimitive(playerId))
             },
         )
+
+        /**
+         * Resolves [playerId]'s current on-air stream title to a library item and
+         * favourites it. Add-only: the queue's `favorite` flag belongs to the station,
+         * not the song, so there is no matching "remove" call. Raises server-side when
+         * the player has no stream title or the title can't be resolved to an item.
+         */
+        fun addCurrentlyPlayingToFavorites(playerId: String) = Request(
+            command = APICommands.PLAYERS_ADD_CURRENTLY_PLAYING_TO_FAVORITES,
+            args = buildJsonObject {
+                put("player_id", JsonPrimitive(playerId))
+            },
+        )
+
+        /**
+         * Speaks [message] on [playerId] through the server's text-to-speech engine. A null
+         * [preAnnounce] or [volumeLevel] is left out, so the player's own settings apply.
+         */
+        fun playAnnouncement(
+            playerId: String,
+            message: String,
+            preAnnounce: Boolean?,
+            volumeLevel: Int?,
+        ) = Request(
+            command = APICommands.PLAYERS_CMD_PLAY_ANNOUNCEMENT,
+            args = buildJsonObject {
+                put("player_id", JsonPrimitive(playerId))
+                put("message", JsonPrimitive(message))
+                preAnnounce?.let { put("pre_announce", JsonPrimitive(it)) }
+                volumeLevel?.let { put("volume_level", JsonPrimitive(it)) }
+            },
+        )
+
+        fun ttsEngines() = Request(command = APICommands.PLAYERS_TTS_ENGINES)
+
+        /** The player's own "chime before an announcement" setting, which the dialog starts from. */
+        fun announcementChime(playerId: String) = Request(
+            command = APICommands.CONFIG_PLAYERS_GET_VALUE,
+            args = buildJsonObject {
+                put("player_id", JsonPrimitive(playerId))
+                put("key", JsonPrimitive("tts_pre_announce"))
+            },
+        )
     }
 
     data object Queue {
@@ -181,7 +238,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
 
         fun items(
             queueId: String,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
         ) = Request(
             command = APICommands.PLAYER_QUEUES_ITEMS,
@@ -316,6 +373,26 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 queueItemId?.let { put("queue_item_id", JsonPrimitive(it)) }
             },
         )
+
+        /**
+         * Configures the ambient sound overlay. A null argument is left out, and the server
+         * keeps its current value. The server applies source, then volume, then enabled, so
+         * one call can select a sound and turn it on.
+         */
+        fun setOverlay(
+            queueId: String,
+            enabled: Boolean,
+            source: String? = null,
+            volume: Int? = null,
+        ) = Request(
+            command = APICommands.PLAYER_QUEUES_OVERLAY,
+            args = buildJsonObject {
+                put("queue_id", JsonPrimitive(queueId))
+                put("enabled", JsonPrimitive(enabled))
+                source?.let { put("source", JsonPrimitive(it)) }
+                volume?.let { put("volume", JsonPrimitive(it)) }
+            },
+        )
     }
 
     data object Playlist {
@@ -327,9 +404,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
         ) = Request(
@@ -339,7 +416,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, genres)
             },
         )
@@ -355,14 +432,12 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             itemId: String,
             providerInstanceIdOrDomain: String,
             forceRefresh: Boolean? = null,
-            orderBy: String? = null,
         ) = Request(
             command = APICommands.MUSIC_PLAYLISTS_PLAYLIST_TRACKS,
             args = buildJsonObject {
                 put("item_id", JsonPrimitive(itemId))
                 put("provider_instance_id_or_domain", JsonPrimitive(providerInstanceIdOrDomain))
                 forceRefresh?.let { put("force_refresh", JsonPrimitive(it)) }
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
             },
         )
 
@@ -395,9 +470,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
         ) = Request(
@@ -407,7 +482,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, genres)
             },
         )
@@ -446,9 +521,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
         ) = Request(
@@ -458,7 +533,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, genres)
             },
         )
@@ -473,11 +548,12 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
+            collapseCollections: Boolean = false,
         ) = Request(
             command = APICommands.MUSIC_AUDIOBOOKS_LIBRARY_ITEMS,
             args = buildJsonObject {
@@ -485,8 +561,17 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, genres)
+                // Groups series into `collection` rows. Servers before 2.10 ignore it.
+                if (collapseCollections) put("collapse_collections", JsonPrimitive(true))
+            },
+        )
+
+        fun getCollection(itemId: String) = Request(
+            command = APICommands.MUSIC_AUDIOBOOKS_GET_COLLECTION,
+            args = buildJsonObject {
+                put("item_id", JsonPrimitive(itemId))
             },
         )
     }
@@ -500,9 +585,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             hideEmpty: Boolean? = null,
             mediaType: String? = null,
@@ -513,7 +598,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, null)
                 hideEmpty?.let { put("hide_empty", JsonPrimitive(it)) }
                 mediaType?.let { put("media_type", JsonPrimitive(it)) }
@@ -545,9 +630,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             albumArtistsOnly: Boolean = false,
             providers: List<String>? = null,
             genres: List<Int>? = null,
@@ -558,7 +643,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 put("album_artists_only", JsonPrimitive(albumArtistsOnly))
                 putListFilters(providers, genres)
             },
@@ -594,10 +679,12 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun getTopTracks(
             itemId: String,
             providerInstanceIdOrDomain: String,
+            providerFilter: String? = null,
         ) = Library.subItems(
             APICommands.MUSIC_ARTISTS_TOP_TRACKS,
             itemId,
             providerInstanceIdOrDomain,
+            providerFilter = providerFilter,
         )
 
         fun getSimilarArtists(
@@ -621,9 +708,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun listLibrary(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             albumTypes: List<String>? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
@@ -634,7 +721,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 albumTypes?.takeIf { it.isNotEmpty() }
                     ?.let { types ->
                         put(
@@ -660,9 +747,9 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
         fun list(
             favorite: Boolean? = null,
             search: String? = null,
-            limit: Int = Int.MAX_VALUE,
+            limit: Int = SERVER_PAGE_SIZE,
             offset: Int = 0,
-            orderBy: String? = null,
+            sort: ListSort? = null,
             providers: List<String>? = null,
             genres: List<Int>? = null,
         ) = Request(
@@ -672,7 +759,7 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 search?.let { put("search", JsonPrimitive(it)) }
                 put("limit", JsonPrimitive(limit))
                 put("offset", JsonPrimitive(offset))
-                orderBy?.let { put("order_by", JsonPrimitive(it)) }
+                putSort(sort)
                 putListFilters(providers, genres)
             },
         )
@@ -683,6 +770,20 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             command = APICommands.MUSIC_BROWSE,
             args = buildJsonObject {
                 path?.let { put("path", JsonPrimitive(it)) }
+            },
+        )
+    }
+
+    data object SoundEffects {
+        fun all() = Request(command = APICommands.MUSIC_SOUND_EFFECTS)
+    }
+
+    data object Sort {
+        /** The sort options of [listing], a server `ListingType` value. From server 2.11. */
+        fun options(listing: String) = Request(
+            command = APICommands.MUSIC_SORT_OPTIONS,
+            args = buildJsonObject {
+                put("listing", JsonPrimitive(listing))
             },
         )
     }
@@ -766,6 +867,13 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             },
         )
 
+        fun itemByUri(uri: String) = Request(
+            command = APICommands.MUSIC_ITEM_BY_URI,
+            args = buildJsonObject {
+                put("uri", JsonPrimitive(uri))
+            },
+        )
+
         fun markPlayed(
             item: MarkableItem,
         ) = Request(
@@ -821,12 +929,14 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             itemId: String,
             providerInstanceIdOrDomain: String,
             limit: Int? = null,
+            providerFilter: String? = null,
         ) = Request(
             command = command,
             args = buildJsonObject {
                 put("item_id", JsonPrimitive(itemId))
                 put("provider_instance_id_or_domain", JsonPrimitive(providerInstanceIdOrDomain))
                 limit?.let { put("limit", JsonPrimitive(it)) }
+                providerFilter?.let { put("provider_filter", JsonPrimitive(it)) }
             },
         )
     }
@@ -834,11 +944,31 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
     data object Auth {
         fun providers() = Request(command = APICommands.AUTH_PROVIDERS)
 
-        fun authorizationUrl(providerId: String, returnUrl: String? = null) = Request(
+        /** A [codeChallenge] makes the browser return to the app, which then sends [exchange]. */
+        fun authorizationUrl(
+            providerId: String,
+            returnUrl: String? = null,
+            codeChallenge: String? = null,
+        ) = Request(
             command = APICommands.AUTH_AUTHORIZATION_URL,
             args = buildJsonObject {
                 put("provider_id", JsonPrimitive(providerId))
                 returnUrl?.let { put("return_url", JsonPrimitive(it)) }
+                codeChallenge?.let {
+                    put("code_challenge", JsonPrimitive(it))
+                    put("code_challenge_method", JsonPrimitive("S256"))
+                    put("redirect_target", JsonPrimitive("app"))
+                }
+            },
+        )
+
+        fun exchange(state: String, code: String, codeVerifier: String, deviceName: String) = Request(
+            command = APICommands.AUTH_EXCHANGE,
+            args = buildJsonObject {
+                put("state", JsonPrimitive(state))
+                put("code", JsonPrimitive(code))
+                put("code_verifier", JsonPrimitive(codeVerifier))
+                put("device_name", JsonPrimitive(deviceName))
             },
         )
 
@@ -901,40 +1031,23 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
     data object AiRadio {
         fun stations() = Request(command = APICommands.AI_RADIO_STATIONS_LIST)
 
-        /**
-         * Starts [stationId] on [playerId].
-         *
-         * The server resolves the override through `players.get_player`, so this must be a
-         * PLAYER id — not the queue id that most other commands take.
-         */
-        fun start(stationId: String, playerId: String) = Request(
-            command = APICommands.AI_RADIO_START,
-            args = buildJsonObject {
-                put("station_id", JsonPrimitive(stationId))
-                put("player_id_override", JsonPrimitive(playerId))
-            },
-        )
+        /** All hosts, sorted by name server-side. Needs `config.providers.read`. */
+        fun hosts() = Request(command = APICommands.AI_RADIO_HOSTS_LIST)
+
+        /** The `queue_id -> {host_id, station_id}` map of queues that have a DJ. Needs `queues.control`. */
+        fun queueDjStatus() = Request(command = APICommands.AI_RADIO_QUEUE_DJ_STATUS)
 
         /**
-         * Stops whatever run [stationId] currently has on air.
-         *
-         * Deliberately by station and not by session id. The server ignores `station_id`
-         * whenever a `session_id` is present, and a session id can only come from an earlier
-         * poll — by the time the user presses Stop that run may have ended on its own, and the
-         * stale id is answered with "Session X is not running (status=finished)". Asking by
-         * station instead lets the server pick the run that is actually live, and its "no
-         * active run found for station" is at least true when there is none.
-         *
-         * Safe because the provider caps concurrent runs at one, so a station has at most one.
+         * Attaches [hostId] as the DJ of [queueId], or detaches the DJ when [hostId] is null.
+         * Off is an explicit JSON `null`, which is what the server's `host_id: str | None`
+         * expects. Answers with the full status map after the change.
          */
-        fun stop(stationId: String) = Request(
-            command = APICommands.AI_RADIO_STOP,
+        fun setQueueDj(queueId: String, hostId: String?) = Request(
+            command = APICommands.AI_RADIO_QUEUE_DJ_SET,
             args = buildJsonObject {
-                put("station_id", JsonPrimitive(stationId))
+                put("queue_id", JsonPrimitive(queueId))
+                put("host_id", hostId?.let(::JsonPrimitive) ?: JsonNull)
             },
         )
-
-        /** All sessions, newest first. The provider emits no events, so this is poll-only. */
-        fun status() = Request(command = APICommands.AI_RADIO_STATUS)
     }
 }

@@ -11,6 +11,12 @@ import io.music_assistant.client.data.model.client.items.image
 import io.music_assistant.client.data.model.client.items.isLongFormSpokenContent
 import io.music_assistant.client.data.model.client.navigationChapters
 import io.music_assistant.client.utils.monotonicMs
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlin.math.abs
 
 /**
@@ -125,19 +131,13 @@ private fun withRadioStreamMetadata(
     playerData: PlayerData,
     currentItem: QueueTrack,
 ): NowPlayingTrack {
-    if (currentItem.track.mediaType != MediaType.RADIO) return base
-    val media = playerData.player.currentMedia ?: return base
-    // The server always stamps queue_item_id when an MA queue item is current;
-    // media stamped otherwise is not this station's stream.
-    if (media.queueItemId != currentItem.id) return base
-    // A title equal to the station name carries no information (idle streams and
-    // the synthesized pre-play fallback both produce it).
-    val streamTitle = media.title?.takeIf { it.isNotBlank() && it != base.title } ?: return base
+    val streamTitle = radioStreamTitle(playerData, currentItem) ?: return base
+    val media = playerData.player.currentMedia
     return base.copy(
         title = streamTitle,
-        artist = media.artist?.takeIf { it.isNotBlank() },
+        artist = media?.artist?.takeIf { it.isNotBlank() },
         album = base.title,
-        artworkUrl = media.imageUrl ?: base.artworkUrl,
+        artworkUrl = media?.imageUrl ?: base.artworkUrl,
     )
 }
 
@@ -167,6 +167,23 @@ internal fun buildNowPlayingTransport(
         },
     )
 }
+
+// Audio-start confirmation can unfreeze position without changing PlayerData.
+// Observe anchor changes, not ticks; the system interpolates between anchors.
+@OptIn(ExperimentalCoroutinesApi::class)
+internal fun Flow<ChapterPresentation<PlayerData?>>.withNowPlayingTransport(
+    positionTracker: PlayerPositionTracker,
+): Flow<NowPlayingTransport?> = flatMapLatest { presentation ->
+    presentation.value?.queueInfo?.id?.let { queueId ->
+        positionTracker.observeAnchor(queueId).map {
+            buildNowPlayingTransport(
+                playerData = presentation.value,
+                positionTracker = positionTracker,
+                currentChapter = presentation.chapter,
+            )
+        }
+    } ?: flowOf(null)
+}.distinctUntilChanged(NowPlayingChannelChangeDetection::sameTransport)
 
 /** Maps queue modes and the shared availability gates to the modes channel. */
 internal fun buildNowPlayingModes(playerData: PlayerData?): NowPlayingModes? {

@@ -2,6 +2,9 @@ package io.music_assistant.client.data
 
 import co.touchlab.kermit.Logger
 import io.music_assistant.client.api.ServiceClient
+import io.music_assistant.client.data.model.server.ENCRYPTED_SENDSPIN_MIN_SCHEMA
+import io.music_assistant.client.data.model.server.sendspinWireFor
+import io.music_assistant.client.data.model.server.supportsEncryptedSendspin
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.utils.AuthProcessState
 import io.music_assistant.client.utils.DataConnectionState
@@ -30,6 +33,9 @@ import kotlinx.coroutines.withTimeout
  * Derives the Sendspin [Endpoint] from the MA session. The endpoint follows the
  * session's transport: a WebRTC session gets the data channel, a direct one the
  * proxied WebSocket (or the custom Sendspin server from settings).
+ * A known schema below [ENCRYPTED_SENDSPIN_MIN_SCHEMA] yields [Endpoint.Unsupported];
+ * an unknown schema is allowed through so the handshake decides. The schema and the
+ * server version pick the wire dialect ([sendspinWireFor]); a wire change restarts the connection.
  *
  * Transient session states keep the last endpoint: the Sendspin connection
  * lives with the process and reconnects on its own, so a reconnecting MA
@@ -78,10 +84,22 @@ class LocalPlayerEndpoints(
     }
 
     /** The endpoint for a proven session, or null while authentication is still pending. */
-    private fun connected(previous: Endpoint?, state: SessionState.Connected): Endpoint? = when (state) {
-        is SessionState.Connected.WebRTC -> previous as? Endpoint.WebRtc ?: Endpoint.WebRtc(::openFreshChannel)
-        is SessionState.Connected.Direct -> state.authenticatedToken()?.let { token ->
-            Endpoint.WebSocket(webSocketUrl(state), token)
+    private fun connected(previous: Endpoint?, state: SessionState.Connected): Endpoint? {
+        val schema = state.serverInfo?.schemaVersion
+        // Missing schema is inconclusive, so let the wire handshake establish compatibility.
+        if (schema != null && !supportsEncryptedSendspin(schema)) {
+            return Endpoint.Unsupported(
+                "MA server schema $schema does not support encrypted Sendspin; requires schema $ENCRYPTED_SENDSPIN_MIN_SCHEMA",
+            )
+        }
+        val wire = sendspinWireFor(schema, state.serverInfo?.serverVersion)
+        return when (state) {
+            is SessionState.Connected.WebRTC ->
+                (previous as? Endpoint.WebRtc)?.takeIf { it.wire == wire } ?: Endpoint.WebRtc(wire, ::openFreshChannel)
+
+            is SessionState.Connected.Direct -> state.authenticatedToken()?.let { token ->
+                Endpoint.WebSocket(webSocketUrl(state), token, wire)
+            }
         }
     }
 

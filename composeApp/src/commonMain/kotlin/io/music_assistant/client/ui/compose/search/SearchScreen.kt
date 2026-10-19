@@ -86,6 +86,7 @@ import musicassistantclient.composeapp.generated.resources.genre_filter_media_ty
 import musicassistantclient.composeapp.generated.resources.search_error
 import musicassistantclient.composeapp.generated.resources.search_in_library_only
 import musicassistantclient.composeapp.generated.resources.search_no_results
+import musicassistantclient.composeapp.generated.resources.search_query_label
 import musicassistantclient.composeapp.generated.resources.search_start
 import org.jetbrains.compose.resources.stringResource
 
@@ -230,7 +231,8 @@ private fun SearchTopBar(
             SearchInput(
                 query = searchState.query,
                 onQueryChanged = onQueryChanged,
-                onSearch = onSearch,
+                onSearchAction = onSearch,
+                placeholder = stringResource(Res.string.search_query_label),
             )
         },
         actions = {
@@ -255,6 +257,8 @@ private fun SearchFilterAction(
         state = { SearchFilterState(selectedMediaTypes, libraryOnly) },
         active = selectedMediaTypes.isNotEmpty() || libraryOnly,
         onApply = { onFiltersChanged(it.selectedMediaTypes, it.libraryOnly.value) },
+        canReset = { it.hasActive },
+        onReset = { it.reset() },
     ) { state ->
         val workingSelectedMediaTypes = state.selectedMediaTypes
         var workingLibraryOnly by state.libraryOnly
@@ -284,6 +288,13 @@ private fun SearchFilterAction(
 private class SearchFilterState(selectedMediaTypes: List<MediaType>, libraryOnly: Boolean) {
     val selectedMediaTypes = selectedMediaTypes.toMutableStateList()
     val libraryOnly = mutableStateOf(libraryOnly)
+
+    val hasActive: Boolean get() = selectedMediaTypes.isNotEmpty() || libraryOnly.value
+
+    fun reset() {
+        selectedMediaTypes.clear()
+        libraryOnly.value = false
+    }
 }
 
 @Composable

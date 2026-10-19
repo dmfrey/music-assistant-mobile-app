@@ -5,8 +5,10 @@ package io.music_assistant.client.data
 
 import co.touchlab.kermit.Logger
 import io.music_assistant.client.api.APICommands
+import io.music_assistant.client.api.Answer
 import io.music_assistant.client.api.Request
 import io.music_assistant.client.api.ServiceClient
+import io.music_assistant.client.api.fetchAllPages
 import io.music_assistant.client.data.MainDataSource.Companion.resolveSelectedPlayerId
 import io.music_assistant.client.data.factory.MediaItemFactory
 import io.music_assistant.client.data.factory.PlayerFactory
@@ -20,21 +22,21 @@ import io.music_assistant.client.data.model.client.byId
 import io.music_assistant.client.data.model.client.isBefore
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.LongFormSeekDefaults
+import io.music_assistant.client.data.model.client.items.PlayableItem
 import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.data.model.client.items.image
 import io.music_assistant.client.data.model.server.AI_RADIO_DOMAIN
-import io.music_assistant.client.data.model.server.AI_RADIO_REQUIRED_SCOPE
+import io.music_assistant.client.data.model.server.AI_RADIO_QUEUE_DJ_SCOPES
+import io.music_assistant.client.data.model.server.AI_RADIO_STATIONS_SCOPES
 import io.music_assistant.client.data.model.server.DspConfig
 import io.music_assistant.client.data.model.server.DspConfigPreset
+import io.music_assistant.client.data.model.server.GrantedScopes
 import io.music_assistant.client.data.model.server.ServerPlayer
-import io.music_assistant.client.data.model.server.ServerProviderInstance
 import io.music_assistant.client.data.model.server.ServerQueue
 import io.music_assistant.client.data.model.server.ServerQueueItem
 import io.music_assistant.client.data.model.server.ServerUser
-import io.music_assistant.client.data.model.server.events.MediaItemAddedEvent
 import io.music_assistant.client.data.model.server.events.MediaItemDeletedEvent
 import io.music_assistant.client.data.model.server.events.MediaItemPlayedEvent
-import io.music_assistant.client.data.model.server.events.MediaItemUpdatedEvent
 import io.music_assistant.client.data.model.server.events.PlayerAddedEvent
 import io.music_assistant.client.data.model.server.events.PlayerRemovedEvent
 import io.music_assistant.client.data.model.server.events.PlayerUpdatedEvent
@@ -42,7 +44,12 @@ import io.music_assistant.client.data.model.server.events.QueueAddedEvent
 import io.music_assistant.client.data.model.server.events.QueueItemsUpdatedEvent
 import io.music_assistant.client.data.model.server.events.QueueTimeUpdatedEvent
 import io.music_assistant.client.data.model.server.events.QueueUpdatedEvent
-import io.music_assistant.client.data.model.server.grantsScope
+import io.music_assistant.client.data.model.server.supportsAiRadio
+import io.music_assistant.client.data.play.PlayDispatcher
+import io.music_assistant.client.data.repository.MediaItemChange
+import io.music_assistant.client.data.repository.MediaItemRepository
+import io.music_assistant.client.data.repository.ProviderRepository
+import io.music_assistant.client.data.repository.favoriteAfter
 import io.music_assistant.client.player.MediaSessionBridge
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.Timings
@@ -62,6 +69,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -78,6 +86,20 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.coroutines.CoroutineContext
+
+/**
+ * Marks the players whose queue has a play request in flight: [localBusyQueueIds] from this
+ * app's PlayDispatcher, or the server flag in [serverQueues] for requests from any client.
+ * The flag is read from the server queues, not from PlayerData.queueInfo, because the local
+ * player's queue info comes from LocalPlayerAdapter and does not carry it.
+ */
+internal fun List<PlayerData>.withPlayRequestsPending(
+    localBusyQueueIds: Set<String>,
+    serverQueues: List<QueueInfo>,
+): List<PlayerData> {
+    val busy = localBusyQueueIds + serverQueues.filter { it.playActionInProgress }.map { it.id }
+    return map { it.copy(playRequestPending = it.queueOrPlayerId in busy) }
+}
 
 /** Preserve newer event/optimistic state when a delayed full snapshot arrives. */
 internal fun mergeFullQueueSnapshot(
@@ -111,8 +133,11 @@ class MainDataSource(
     /** Server-synced user preferences, refreshed from `auth/me` and shared by all surfaces. */
     val userPreferences: UserPreferences,
     private val mediaItemFactory: MediaItemFactory,
+    private val mediaItemRepository: MediaItemRepository,
     private val playerFactory: PlayerFactory,
     private val queueFactory: QueueFactory,
+    private val playDispatcher: PlayDispatcher,
+    providerRepository: ProviderRepository,
 ) : CoroutineScope {
     private val log = Logger.withTag("MainDataSource")
 
@@ -123,6 +148,7 @@ class MainDataSource(
         val queues: List<QueueInfo>,
         val localData: PlayerData?,
         val favoriteOverrides: Map<String, Boolean>,
+        val busyQueueIds: Set<String>,
     )
 
     /** Local (Sendspin) player lifecycle, state and commands live in the controller. */
@@ -138,20 +164,50 @@ class MainDataSource(
     private val _queueInfos = MutableStateFlow<List<QueueInfo>>(emptyList())
 
     /**
-     * Whether the AI Radio UI may be offered: the optional `ai_radio` plugin is loaded AND
-     * the signed-in user's role grants the scope its start/stop commands demand. Both halves
-     * matter — a `user` role can list stations but cannot play any, so gating on the plugin
-     * alone would render a Library section where every tap fails.
+     * What the signed-in user may do, from `auth/scopes` and the user's role. Write actions
+     * that the user cannot run stay hidden. Fails closed: [GrantedScopes.NONE] until the table
+     * arrives, and after a failed fetch.
      */
-    private val _aiRadioAvailable = MutableStateFlow(false)
-    val aiRadioAvailable: StateFlow<Boolean> = _aiRadioAvailable.asStateFlow()
+    private val _grantedScopes = MutableStateFlow(GrantedScopes.NONE)
+    val grantedScopes: StateFlow<GrantedScopes> = _grantedScopes.asStateFlow()
+
+    /**
+     * Whether the optional `ai_radio` plugin is loaded and the server plays shows as Radio items
+     * ([supportsAiRadio]). Follows the provider list, so enabling or removing the plugin shows at
+     * once. Fails closed: false until the list arrives, and after a failed fetch.
+     */
+    private val aiRadioSupported: Flow<Boolean> =
+        combine(providerRepository.providers, apiClient.sessionState) { providers, session ->
+            providers.dataOrNull.orEmpty().any { it.domain == AI_RADIO_DOMAIN && it.available } &&
+                supportsAiRadio((session as? HasConnectionData)?.serverInfo?.schemaVersion)
+        }
+
+    /**
+     * Whether the AI Radio stations may be offered: [aiRadioSupported] AND the role grants every
+     * scope in [AI_RADIO_STATIONS_SCOPES]. Gating on the plugin alone would render a Library
+     * section where every tap fails.
+     */
+    val aiRadioAvailable: StateFlow<Boolean> =
+        combine(aiRadioSupported, _grantedScopes) { supported, scopes ->
+            supported && scopes.hasAll(AI_RADIO_STATIONS_SCOPES)
+        }.stateIn(this, SharingStarted.Eagerly, false)
+
+    /**
+     * Whether the queue DJ menu may be offered: [aiRadioSupported] AND the role grants every
+     * scope in [AI_RADIO_QUEUE_DJ_SCOPES]. Independent of [aiRadioAvailable], which needs other
+     * scopes.
+     */
+    val aiRadioQueueDjAvailable: StateFlow<Boolean> =
+        combine(aiRadioSupported, _grantedScopes) { supported, scopes ->
+            supported && scopes.hasAll(AI_RADIO_QUEUE_DJ_SCOPES)
+        }.stateIn(this, SharingStarted.Eagerly, false)
 
     /**
      * Authoritative favorite state per track, keyed by [favKey]. The server's
      * queue payload reports a stale `favorite` for the now-playing track (it
      * lags behind, indefinitely, after a toggle), so it cannot be trusted.
      * This overlay is written optimistically on user toggle and reconciled by
-     * the reliable [MediaItemUpdatedEvent], then re-applied on every rebuild in
+     * the reliable server item changes ([MediaItemChange]), then re-applied on every rebuild in
      * [buildPlayerDataList] so queue updates can't clobber it.
      */
     private val _favoriteOverrides = MutableStateFlow<Map<String, Boolean>>(emptyMap())
@@ -194,14 +250,7 @@ class MainDataSource(
      */
     val nowPlayingTransport: StateFlow<NowPlayingTransport?> =
         localPlayerPresentation
-            .map {
-                buildNowPlayingTransport(
-                    playerData = it.value,
-                    positionTracker = positionTracker,
-                    currentChapter = it.chapter,
-                )
-            }
-            .distinctUntilChanged(NowPlayingChannelChangeDetection::sameTransport)
+            .withNowPlayingTransport(positionTracker)
             .stateIn(this, SharingStarted.Eagerly, null)
 
     /** Queue modes and their shared availability gate for system-media controls. */
@@ -244,7 +293,7 @@ class MainDataSource(
             _userSelectedPlayerId,
         ) { playersDataState, user ->
             val visibleIds = (playersDataState as? DataState.Data)
-                ?.data?.map { it.playerId }
+                ?.data?.filter { it.player.isSelectable }?.map { it.playerId }
                 .orEmpty()
             resolveSelectedPlayerId(
                 visiblePlayerIds = visibleIds,
@@ -357,29 +406,32 @@ class MainDataSource(
                 settings.playersSorting,
                 _queueInfos,
                 localPlayerController.localPlayerData,
-                _favoriteOverrides,
-            ) { players, sortedIds, queues, localData, favOverrides ->
-                PlayerBuildInputs(players, sortedIds, queues, localData, favOverrides)
+                combine(_favoriteOverrides, playDispatcher.busyQueueIds, ::Pair),
+            ) { players, sortedIds, queues, localData, (favOverrides, busyQueueIds) ->
+                PlayerBuildInputs(players, sortedIds, queues, localData, favOverrides, busyQueueIds)
             }
                 .debounce(Timings.EVENT_DEBOUNCE) // Small debounce to batch rapid updates, but don't delay initial load
                 .collect { input ->
-                    if (input.players !is DataState.Stale) {
-                        _playersData.update { oldValues ->
-                            when (input.players) {
-                                is DataState.Error -> DataState.Error()
-                                is DataState.Loading -> DataState.Loading()
-                                is DataState.NoData -> DataState.NoData()
-                                is DataState.Data -> DataState.Data(
-                                    buildPlayerDataList(
-                                        input.players.data,
-                                        input.sortedIds,
-                                        input.queues,
-                                        input.localData,
-                                        input.favoriteOverrides,
-                                        oldValues,
-                                    ),
-                                )
-                            }
+                    _playersData.update { oldValues ->
+                        fun build(serverPlayers: List<Player>) = DataState.Data(
+                            buildPlayerDataList(
+                                serverPlayers,
+                                input.sortedIds,
+                                input.queues,
+                                input.localData,
+                                input.favoriteOverrides,
+                                input.busyQueueIds,
+                                oldValues,
+                            ),
+                        )
+                        when (val players = input.players) {
+                            is DataState.Error -> DataState.Error()
+                            is DataState.Loading -> DataState.Loading()
+                            is DataState.NoData -> DataState.NoData()
+                            is DataState.Data -> build(players.data)
+                            // Stale server players stay as they were, but the list keeps tracking the
+                            // local player: it works offline, and its optimistic changes must show.
+                            is DataState.Stale -> build(players.data)
                         }
                     }
                 }
@@ -431,7 +483,7 @@ class MainDataSource(
                                                 DataState.Data(currentState.data)
                                             }
                                             updateUserPreferences()
-                                            updateAiRadioAvailability()
+                                            updateAccess()
                                             updatePlayersAndQueues()
                                         }
                                     }
@@ -441,7 +493,7 @@ class MainDataSource(
                                     // Already have data (shouldn't happen, but handle gracefully)
                                     log.w { "Connected while already in Data state - refreshing anyway" }
                                     updateUserPreferences()
-                                    updateAiRadioAvailability()
+                                    updateAccess()
                                     updatePlayersAndQueues()
                                     refreshSelectedPlayerQueueItems()
                                     // Safety net: reinit Sendspin if it's not already connected.
@@ -453,7 +505,7 @@ class MainDataSource(
                                     // Fresh connection or error recovery - show loading
                                     _serverPlayers.update { DataState.Loading() }
                                     updateUserPreferences()
-                                    updateAiRadioAvailability()
+                                    updateAccess()
                                     updatePlayersAndQueues()
                                 }
                             }
@@ -690,17 +742,26 @@ class MainDataSource(
             }
         }
 
-        // Arms `hasActivePlayback` so backgrounding mid-playback doesn't tear down
-        // Sendspin (goodbye=shutdown → audio stops, server cold-resumes. Driven off
-        // logical `isPlaying`, which survives the transient transport blip — unlike
-        // the Sendspin sync state.
+        // Arms `hasActivePlayback` so backgrounding doesn't tear down the session while the
+        // local player plays, or while a local pause still waits for the server to confirm it
+        // (goodbye=shutdown → audio stops, server cold-resumes). Driven off the adapter's logical
+        // state, which survives the transient transport blip — unlike the Sendspin sync state.
         launch {
-            localPlayer
-                .map { it?.player?.isPlaying == true }
-                .distinctUntilChanged()
+            localPlayerController.wantsSession
                 .collect { if (it) apiClient.onPlaybackActive() else apiClient.onPlaybackInactive() }
         }
+
+        // Every play_media for the local player (library, car, Siri, AI Radio) wants the next
+        // stream: lift a local hold before that stream arrives.
+        launch {
+            playDispatcher.accepted.collect { if (isLocalQueue(it)) localPlayerController.onPlaybackRequested() }
+        }
     }
+
+    /** The local player is addressed by its player id or by its queue id. */
+    private fun isLocalQueue(queueOrPlayerId: String): Boolean =
+        queueOrPlayerId == settings.sendspinEffectivePlayerId.value ||
+            queueOrPlayerId == localPlayerController.localPlayerData.value?.queueId
 
     /**
      * Build the merged player data list for [_playersData].
@@ -712,6 +773,7 @@ class MainDataSource(
         queues: List<QueueInfo>,
         localData: PlayerData?,
         favoriteOverrides: Map<String, Boolean>,
+        busyQueueIds: Set<String>,
         oldValues: DataState<List<PlayerData>>,
     ): List<PlayerData> {
         val localPlayerId = settings.sendspinEffectivePlayerId.value
@@ -783,6 +845,7 @@ class MainDataSource(
         // independent (currentMedia vs queue.currentItem.track.favorite), so order is free.
         return withLocal
             .map { applyNowPlayingArtwork(it) }
+            .withPlayRequestsPending(busyQueueIds, queues)
             .let { list ->
                 if (favoriteOverrides.isEmpty()) {
                     list
@@ -831,7 +894,7 @@ class MainDataSource(
      * media-session (Android Auto) favorite action. Optimistically flips the override
      * (the server's queue payload reports a stale `favorite`), fires the add/remove
      * request, and rolls the override back if the server rejects it. Reconciled later
-     * by [MediaItemUpdatedEvent].
+     * by the server item changes ([MediaItemChange]).
      */
     fun toggleFavorite(item: AppMediaItem) {
         launch {
@@ -847,6 +910,38 @@ class MainDataSource(
                 )
             }
             result.onFailure { setFavoriteOverride(item, item.favorite) }
+        }
+    }
+
+    /**
+     * True when [playerData] has a real on-air stream song the connected server can
+     * resolve to a favouritable item. Gates the stream-favourite heart on both the
+     * media session and the in-app player, and guards [favoriteCurrentlyPlaying].
+     */
+    fun canFavoriteCurrentlyPlaying(playerData: PlayerData): Boolean =
+        playerData.canFavoriteCurrentlyPlaying(
+            (apiClient.sessionState.value as? HasConnectionData)?.serverInfo?.schemaVersion,
+        )
+
+    /**
+     * Favourites the song currently on air on [playerData]'s radio stream. Unlike
+     * [toggleFavorite], this always adds: the queue payload's `favorite` flag belongs
+     * to the station, not the on-air song, so there is no truthful "already
+     * favourited" state to toggle from. No optimistic override — the server resolves
+     * the favourited item from the stream title, not from the queue item, so there is
+     * nothing local to flip ahead of the round trip. An unsupported server or an
+     * unresolvable title is an expected refusal; callers report the result to the user.
+     */
+    suspend fun favoriteCurrentlyPlaying(playerData: PlayerData): Result<Answer> {
+        if (!canFavoriteCurrentlyPlaying(playerData)) {
+            return Result.failure(IllegalStateException("No supported on-air song to favorite"))
+        }
+        return apiClient.sendRequest(
+            Request.Player.addCurrentlyPlayingToFavorites(playerData.player.id),
+        ).mapCatching { answer ->
+            // A received RPC error is still a successful transport response.
+            check(!answer.json.containsKey("error_code")) { "The server rejected the stream favorite" }
+            answer
         }
     }
 
@@ -883,9 +978,9 @@ class MainDataSource(
         // Server-scoped: another server must not inherit this one's preferences.
         userPreferences.clear()
         localPlayerController.clearState()
-        // Server-scoped: the plugin set and the user's role both belong to the old
-        // connection, so another server must not inherit this one's gate.
-        _aiRadioAvailable.value = false
+        // Server-scoped: the user's role belongs to the old connection, so another server
+        // must not inherit this one's gates. The provider list resets with the session.
+        _grantedScopes.value = GrantedScopes.NONE
         // Note: _providersIcons deliberately NOT cleared (static data)
     }
 
@@ -1106,6 +1201,7 @@ class MainDataSource(
         launch {
             when (action) {
                 is QueueAction.PlayQueueItem -> {
+                    if (isLocalQueue(action.queueId)) localPlayerController.onPlaybackRequested()
                     apiClient.sendRequest(
                         Request.Queue.playIndex(
                             queueId = action.queueId,
@@ -1164,6 +1260,7 @@ class MainDataSource(
 
     private fun watchApiEvents() =
         launch {
+            launch { watchTrackChanges() }
             apiClient.events
                 .collect { event ->
                     when (event) {
@@ -1362,21 +1459,6 @@ class MainDataSource(
                             // anchors flow via `QueueTimeUpdatedEvent` above.
                         }
 
-                        is MediaItemUpdatedEvent -> {
-                            (mediaItemFactory.create(event.data) as? Track)
-                                ?.let {
-                                    // Reliable server truth — reconcile the optimistic
-                                    // overlay so it survives the stale queue payload.
-                                    it.favorite?.let { fav -> setFavoriteOverride(it, fav) }
-                                    updateMediaTrackInfo(it)
-                                }
-                        }
-
-                        is MediaItemAddedEvent -> {
-                            (mediaItemFactory.create(event.data) as? Track)
-                                ?.let { updateMediaTrackInfo(it) }
-                        }
-
                         is MediaItemDeletedEvent -> {
                             (mediaItemFactory.create(event.data) as? Track)
                                 ?.let { deletedTrack ->
@@ -1419,7 +1501,30 @@ class MainDataSource(
                 }
         }
 
-    private fun updateMediaTrackInfo(newTrack: Track) {
+    /**
+     * Added and updated tracks come from [MediaItemRepository.itemChanges], which knows if a change
+     * carries the favorite of the user. [watchApiEvents] handles the deletions, because the raw
+     * event keeps the library identity.
+     */
+    private suspend fun watchTrackChanges() {
+        mediaItemRepository.itemChanges.collect { change ->
+            val track = change.item as? Track ?: return@collect
+            when (change) {
+                // Reliable server truth — reconcile the optimistic overlay so it survives
+                // the stale queue payload. No choice (null) shows as "not a favorite".
+                is MediaItemChange.FavoriteUpdated -> setFavoriteOverride(track, track.favorite == true)
+                is MediaItemChange.Updated ->
+                    track.favorite?.takeIf { change.carriesFavorite }?.let { setFavoriteOverride(track, it) }
+                is MediaItemChange.Added -> Unit
+                is MediaItemChange.Deleted -> return@collect
+            }
+            updateMediaTrackInfo(track, change)
+        }
+    }
+
+    private fun updateMediaTrackInfo(newTrack: Track, change: MediaItemChange) {
+        // The new version of a queue row keeps the favorite of the row if the change has none.
+        val replacing = { current: PlayableItem -> newTrack.withFavorite(change.favoriteAfter(current.favorite)) }
         _playersData.update { currentState ->
             when (currentState) {
                 is DataState.Error,
@@ -1434,7 +1539,7 @@ class MainDataSource(
                             val updatedItems = items.map { queueTrack ->
                                 if ((queueTrack.track as? AppMediaItem)?.hasAnyMappingFrom(newTrack) == true) {
                                     queueTrack.copy(
-                                        track = newTrack,
+                                        track = replacing(queueTrack.track),
                                     )
                                 } else {
                                     queueTrack
@@ -1449,13 +1554,7 @@ class MainDataSource(
                                             ) {
                                                 queueData.data.info.copy(
                                                     currentItem = queueData.data.info.currentItem.copy(
-                                                        track = newTrack
-                                                            .takeIf {
-                                                                it.hasAnyMappingFrom(
-                                                                    queueData.data.info.currentItem.track as AppMediaItem,
-                                                                )
-                                                            }
-                                                            ?: queueData.data.info.currentItem.track,
+                                                        track = replacing(queueData.data.info.currentItem.track),
                                                     ),
                                                 )
                                             } else {
@@ -1548,23 +1647,17 @@ class MainDataSource(
     }
 
     /**
-     * Resolves the AI Radio gate. Fails closed: any missing piece — plugin absent, role
-     * unknown, either fetch failing — leaves the feature hidden rather than half-offered.
+     * Resolves [grantedScopes]. Fails closed: an unknown role or a failed fetch grants nothing,
+     * which also hides the AI Radio gates.
      */
-    private fun updateAiRadioAvailability() {
+    private fun updateAccess() {
         launch {
-            val pluginLoaded = apiClient.sendRequest(Request.Provider.all())
-                .resultAs<List<ServerProviderInstance>>()
-                ?.any { it.domain == AI_RADIO_DOMAIN && it.available } == true
-            if (!pluginLoaded) {
-                _aiRadioAvailable.value = false
-                return@launch
-            }
-            val roleScopes = apiClient.sendRequest(Request(APICommands.AUTH_SCOPES))
-                .resultAs<Map<String, List<String>>>()
-                .orEmpty()
-            val role = (apiClient.sessionState.value as? HasConnectionData)?.user?.role
-            _aiRadioAvailable.value = grantsScope(roleScopes, role, AI_RADIO_REQUIRED_SCOPE)
+            _grantedScopes.value = GrantedScopes.of(
+                roleScopes = apiClient.sendRequest(Request(APICommands.AUTH_SCOPES))
+                    .resultAs<Map<String, List<String>>>()
+                    .orEmpty(),
+                role = (apiClient.sessionState.value as? HasConnectionData)?.user?.role,
+            )
         }
     }
 
@@ -1608,8 +1701,11 @@ class MainDataSource(
     ) {
         launch {
             (forcedQueueData ?: fullData.queueInfo)?.let { queueInfo ->
-                val queueTracks = apiClient.sendRequest(Request.Queue.items(queueInfo.id))
-                    .resultAs<List<ServerQueueItem>>()?.let { queueFactory.createTrackList(it) }
+                // Paged so a huge queue never exceeds the server's per-message cap. A queue edited
+                // between two pages can duplicate or skip an item until the next queue event.
+                val queueTracks = Request.Queue.items(queueInfo.id)
+                    .fetchAllPages { apiClient.sendRequest(it).resultAs<List<ServerQueueItem>>() }
+                    ?.let { queueFactory.createTrackList(it) }
 
                 // Forward to local player repository so external consumers (Android Auto, CarPlay) see items
                 if (fullData.isLocal && queueTracks != null) {

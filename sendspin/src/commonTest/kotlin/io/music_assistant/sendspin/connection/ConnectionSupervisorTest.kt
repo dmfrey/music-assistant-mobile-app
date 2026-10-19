@@ -3,6 +3,7 @@ package io.music_assistant.sendspin.connection
 import io.music_assistant.sendspin.api.Endpoint
 import io.music_assistant.sendspin.api.FailureCause
 import io.music_assistant.sendspin.api.MonotonicClock
+import io.music_assistant.sendspin.api.WireVersion
 import io.music_assistant.sendspin.fakes.FakeNoiseServer
 import io.music_assistant.sendspin.fakes.FakeTransport
 import io.music_assistant.sendspin.identity.FakeSendspinKeyStore
@@ -30,6 +31,7 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeout
 import kotlin.random.Random
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -40,7 +42,7 @@ import kotlin.test.assertTrue
 class ConnectionSupervisorTest {
     private val crypto = CryptographyKotlinNoiseCrypto()
     private val online = MutableStateFlow(true)
-    private val sessionConfig = SessionConfig("Device", playerSupport = null, deviceInfo = null)
+    private val sessionConfig = SessionConfig(WireVersion.LEGACY_9, "Device", playerSupport = null, deviceInfo = null)
     private var pairCalls = 0
     private val noopHandler = object : SessionHandler {
         override fun onReady(info: SessionInfo) = Unit
@@ -86,7 +88,7 @@ class ConnectionSupervisorTest {
         val job = launch {
             launch { supervisor.state.collect { states += it to testScheduler.currentTime } }
             supervisor.run(
-                endpoint ?: Endpoint.WebRtc { connect(attempts++).also { transports += it } },
+                endpoint ?: Endpoint.WebRtc(WireVersion.LEGACY_9) { connect(attempts++).also { transports += it } },
                 sessionConfig,
                 noopHandler,
                 companion = companion,
@@ -98,6 +100,40 @@ class ConnectionSupervisorTest {
 
     private fun Harness.server(transport: FakeTransport) =
         FakeNoiseServer(crypto, transport, serverStatic, trustStore.identity.keyPair.publicKey)
+
+    @Test
+    fun unsupportedEndpointFailsWithoutOpeningTransport() = runTest {
+        val h = harness(endpoint = Endpoint.Unsupported("server too old"))
+        advanceTimeBy(120_000)
+        runCurrent()
+
+        assertEquals(
+            FailureCause.IncompatibleProtocol,
+            assertIs<ConnectionState.Failed>(h.supervisor.state.value).cause,
+        )
+        assertTrue(h.transports.isEmpty())
+        h.job.cancel()
+    }
+
+    @Test
+    fun unsupportedCoreVersionStopsRetrying() = runTest {
+        val h = harness()
+        val transport = h.transports.single()
+        transport.serverSends(
+            """{"type":"server/init","payload":{"version":999,"server_id":"unused"}}""",
+        )
+        runCurrent()
+        advanceTimeBy(120_000)
+        runCurrent()
+
+        assertEquals(
+            FailureCause.IncompatibleProtocol,
+            assertIs<ConnectionState.Failed>(h.supervisor.state.value).cause,
+        )
+        assertEquals(1, h.transports.size)
+        assertTrue(transport.closed)
+        h.job.cancel()
+    }
 
     @Test
     fun connectFailuresBackOffExponentiallyAndCap() = runTest {
@@ -116,6 +152,21 @@ class ConnectionSupervisorTest {
         assertTrue(backoffs.drop(6).all { (it.reason is DropReason.ConnectFailed) })
         val lateDelay = (backoffs[7].retryAtMicros / 1_000) - h.states.first { it.first == backoffs[7] }.second
         assertTrue(lateDelay in 24_000L..36_000L, "capped: $lateDelay")
+    }
+
+    @Test
+    fun connectTimeoutIsAFailedAttemptNotACancellation() = runTest {
+        var attempts = 0
+        val h = harness(connect = {
+            attempts++
+            withTimeout(1_000) { awaitCancellation() }
+        })
+        advanceTimeBy(20_000)
+        h.job.cancel()
+
+        assertTrue(attempts >= 2, "a timed-out connect is retried, attempts=$attempts")
+        val backoffs = h.statesOf { it is ConnectionState.Backoff }.map { it.first as ConnectionState.Backoff }
+        assertTrue(backoffs.isNotEmpty() && backoffs.all { it.reason is DropReason.ConnectFailed })
     }
 
     @Test
@@ -186,7 +237,7 @@ class ConnectionSupervisorTest {
     @Test
     fun webRtcEndpointOpensAFreshChannelPerAttempt() = runTest {
         var opened = 0
-        val endpoint = Endpoint.WebRtc {
+        val endpoint = Endpoint.WebRtc(WireVersion.LEGACY_9) {
             opened++
         FakeTransport().also { it.serverDrops() }
         }

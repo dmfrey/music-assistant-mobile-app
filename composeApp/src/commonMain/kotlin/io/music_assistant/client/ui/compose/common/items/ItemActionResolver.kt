@@ -4,6 +4,7 @@ import io.music_assistant.client.data.model.client.ClickContext
 import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.items.Album
 import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.AudioSource
 import io.music_assistant.client.data.model.client.items.Audiobook
 import io.music_assistant.client.data.model.client.items.PodcastEpisode
 import io.music_assistant.client.data.model.client.items.RadioStation
@@ -17,10 +18,12 @@ val AppMediaItem.supportsAddToPlaylist: Boolean
 /**
  * Long-click menu shows the union: playback block (Play Now / Insert Next & Play / Insert Next /
  * Add to Bottom / Start endless mix) followed by library, favorite, playlist and progress entries.
+ * Each of the latter writes the library, so [canEditLibrary] (`library.write`) gates them all.
  */
 fun resolveLongClickActions(
     item: AppMediaItem,
     clickContext: ClickContext? = null,
+    canEditLibrary: Boolean,
     librarySupported: Boolean,
     canAddToPlaylist: Boolean,
     canRemoveFromPlaylist: Boolean,
@@ -28,8 +31,14 @@ fun resolveLongClickActions(
     defaultAction: ItemAction? = null,
     customizationAllowed: Boolean = false,
 ): List<ItemAction> = buildList {
+    // A live input never ends, so nothing queued behind it is reached: starting it is the only action.
+    if (item is AudioSource) {
+        if (item.isPlayable) add(ItemAction.Play(QueueOption.REPLACE))
+        return@buildList
+    }
     if (item.isPlayable) addPlaybackActions(item, clickContext)
     if (customizationAllowed) add(ItemAction.Customize)
+    if (!canEditLibrary) return@buildList
     if (librarySupported) {
         add(if (item.isInLibrary) ItemAction.RemoveFromLibrary else ItemAction.AddToLibrary)
         if (item.isInLibrary) {
@@ -84,14 +93,17 @@ private fun MutableList<ItemAction>.addPlaybackActions(
 }
 
 /**
- * Item detail screen three-dot overflow — library/favorite/playlist. Navigation entries
- * (Go to album / artist) are appended separately at the call site via [navigationOptions].
+ * Item detail screen three-dot overflow — library/favorite/playlist, all gated by
+ * [canEditLibrary]. Navigation entries (Go to album / artist) are appended separately at the
+ * call site via [navigationOptions].
  */
 fun resolveDetailOverflowActions(
     item: AppMediaItem,
+    canEditLibrary: Boolean,
     librarySupported: Boolean,
     canAddToPlaylist: Boolean,
 ): List<ItemAction> = buildList {
+    if (!canEditLibrary) return@buildList
     if (librarySupported) {
         add(if (item.isInLibrary) ItemAction.RemoveFromLibrary else ItemAction.AddToLibrary)
         if (item.isInLibrary) {

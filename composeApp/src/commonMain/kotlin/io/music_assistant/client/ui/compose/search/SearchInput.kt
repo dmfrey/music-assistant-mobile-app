@@ -1,11 +1,13 @@
 package io.music_assistant.client.ui.compose.search
 
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,23 +29,39 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.tooling.preview.Preview
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.common_clear
-import musicassistantclient.composeapp.generated.resources.search_query_label
+import musicassistantclient.composeapp.generated.resources.nav_search
 import org.jetbrains.compose.resources.stringResource
 
+/**
+ * Flexible search input allowing for both "search on action" and "search as you type"  behavior
+ * based on whether [onSearchAction] is non-null or not.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SearchInput(
-    modifier: Modifier = Modifier,
     query: String,
+    modifier: Modifier = Modifier,
     onQueryChanged: (String) -> Unit = {},
-    onSearch: () -> Unit = {},
+    onSearchAction: (() -> Unit)? = null,
     focusManager: FocusManager = LocalFocusManager.current,
+    placeholder: String,
 ) {
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(Unit) {
         if (query.isEmpty()) {
             focusRequester.requestFocus()
         }
+    }
+
+    val imeAction = if (onSearchAction != null) {
+        ImeAction.Search
+    } else {
+        ImeAction.Done
+    }
+
+    val submit = {
+        onSearchAction?.invoke()
+        focusManager.clearFocus()
     }
 
     val textStyle = MaterialTheme.typography.bodyLarge
@@ -56,32 +74,39 @@ fun SearchInput(
         value = query,
         onValueChange = onQueryChanged,
         placeholder = {
-            Text(
-                stringResource(Res.string.search_query_label),
-                style = textStyle,
-            )
+            Text(placeholder, style = textStyle)
         },
         singleLine = true,
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+        keyboardOptions = KeyboardOptions(imeAction = imeAction),
         keyboardActions = KeyboardActions(
-            onSearch = {
-                onSearch()
-                focusManager.clearFocus()
-            },
+            onSearch = { submit() },
+            onDone = { focusManager.clearFocus() },
         ),
         textStyle = textStyle,
+        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
         trailingIcon = if (query.isNotEmpty()) {
             {
-                IconButton(
-                    onClick = {
-                        onQueryChanged("")
-                        onSearch()
-                    },
-                ) {
-                    Icon(
-                        Icons.Default.Clear,
-                        contentDescription = stringResource(Res.string.common_clear),
-                    )
+                Row {
+                    IconButton(
+                        onClick = {
+                            onQueryChanged("")
+                            onSearchAction?.invoke()
+                        },
+                    ) {
+                        Icon(
+                            Icons.Default.Clear,
+                            contentDescription = stringResource(Res.string.common_clear),
+                        )
+                    }
+
+                    if (onSearchAction != null) {
+                        IconButton(onClick = submit) {
+                            Icon(
+                                Icons.Default.Search,
+                                contentDescription = stringResource(Res.string.nav_search),
+                            )
+                        }
+                    }
                 }
             }
         } else {
@@ -101,13 +126,31 @@ fun SearchInput(
 @Preview
 @Composable
 fun SearchInputPreview() {
-    SearchInput(query = "A query for something")
+    SearchInput(
+        query = "A query for something",
+        onSearchAction = {},
+        placeholder = "Search...",
+    )
 }
 
 @Preview
 @Composable
 fun SearchInputEmptyPreview() {
-    SearchInput(query = "")
+    SearchInput(
+        query = "",
+        onSearchAction = {},
+        placeholder = "Search...",
+    )
+}
+
+@Preview
+@Composable
+fun SearchInputFindInListPreview() {
+    SearchInput(
+        query = "radiohead",
+        onSearchAction = null,
+        placeholder = "Search...",
+    )
 }
 
 @Preview
@@ -115,5 +158,7 @@ fun SearchInputEmptyPreview() {
 fun SearchInputLongQueryPreview() {
     SearchInput(
         query = "a really long query for something that isn't likely to be something anyone would actually ever type",
+        onSearchAction = {},
+        placeholder = "Search...",
     )
 }

@@ -1,7 +1,8 @@
-@file:OptIn(ExperimentalMaterial3Api::class)
-
 package io.music_assistant.client.ui.compose.item
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.plus
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
@@ -21,8 +23,10 @@ import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.PrimaryScrollableTabRow
 import androidx.compose.material3.Scaffold
@@ -64,13 +68,17 @@ import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.Artist
 import io.music_assistant.client.data.model.client.items.Audiobook
 import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
 import io.music_assistant.client.data.model.client.items.PlayableItem
 import io.music_assistant.client.data.model.client.items.Playlist
 import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.data.model.client.items.PodcastEpisode
+import io.music_assistant.client.data.model.client.items.RadioStation
 import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.model.client.resumeChapter
 import io.music_assistant.client.data.model.client.stringResource
 import io.music_assistant.client.data.model.client.toClickContext
+import io.music_assistant.client.data.model.server.ServerMediaItem
 import io.music_assistant.client.settings.ViewMode
 import io.music_assistant.client.ui.compose.common.CenteredProgress
 import io.music_assistant.client.ui.compose.common.CenteredText
@@ -81,6 +89,7 @@ import io.music_assistant.client.ui.compose.common.ExtractedColorsSource
 import io.music_assistant.client.ui.compose.common.NoOverscroll
 import io.music_assistant.client.ui.compose.common.items.AlbumWithMenu
 import io.music_assistant.client.ui.compose.common.items.ArtistWithMenu
+import io.music_assistant.client.ui.compose.common.items.AudiobookWithMenu
 import io.music_assistant.client.ui.compose.common.items.CategoryRow
 import io.music_assistant.client.ui.compose.common.items.ItemCategory
 import io.music_assistant.client.ui.compose.common.items.ItemSortChip
@@ -90,6 +99,7 @@ import io.music_assistant.client.ui.compose.common.items.PlaylistActions
 import io.music_assistant.client.ui.compose.common.items.PodcastEpisodeWithMenu
 import io.music_assistant.client.ui.compose.common.items.ProgressActions
 import io.music_assistant.client.ui.compose.common.items.ProvideClickActions
+import io.music_assistant.client.ui.compose.common.items.RadioWithMenu
 import io.music_assistant.client.ui.compose.common.items.TrackWithMenu
 import io.music_assistant.client.ui.compose.common.items.lazyListOccurrenceKeys
 import io.music_assistant.client.ui.compose.common.items.playableLazyListOccurrenceKeys
@@ -114,13 +124,17 @@ import musicassistantclient.composeapp.generated.resources.album_disc_header
 import musicassistantclient.composeapp.generated.resources.artist_section_all
 import musicassistantclient.composeapp.generated.resources.artist_section_in_library
 import musicassistantclient.composeapp.generated.resources.artist_section_top
+import musicassistantclient.composeapp.generated.resources.artist_source_all
+import musicassistantclient.composeapp.generated.resources.cd_in_progress
 import musicassistantclient.composeapp.generated.resources.cd_provider_filter
 import musicassistantclient.composeapp.generated.resources.item_error
 import musicassistantclient.composeapp.generated.resources.item_no_data
 import musicassistantclient.composeapp.generated.resources.library_empty
 import musicassistantclient.composeapp.generated.resources.library_error
+import musicassistantclient.composeapp.generated.resources.media_type_audiobooks
 import musicassistantclient.composeapp.generated.resources.media_type_chapters
 import musicassistantclient.composeapp.generated.resources.media_type_episodes
+import musicassistantclient.composeapp.generated.resources.search_no_results
 import org.jetbrains.compose.resources.StringResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
@@ -162,14 +176,15 @@ fun ItemDetailsScreen(
         onFavoriteClick = actionsViewModel::onFavoriteClick,
         onMarkPlayed = actionsViewModel::onMarkPlayed,
         onMarkUnplayed = actionsViewModel::onMarkUnplayed,
-        onRemoveFromPlaylist = { id, pos ->
-            actionsViewModel.removeFromPlaylist(id, pos, itemDetailsViewModel::reload)
+        onRemoveFromPlaylist = { id, position ->
+            actionsViewModel.removeFromPlaylist(id, position, itemDetailsViewModel::reload)
         },
         providerIconFetcher = providerViewModel.providerIconFetcher(),
         onPlayClick = itemDetailsViewModel::onPlayClick,
         onChapterClick = itemDetailsViewModel::onChapterClick,
         onChildPlayClick = itemDetailsViewModel::onPlayClick,
         onPlayableItemsSortChanged = itemDetailsViewModel::onPlayableItemsSortChanged,
+        onPlayableItemsQueryChanged = itemDetailsViewModel::onPlayableItemsQueryChanged,
         onTabSelected = itemDetailsViewModel::onTabSelected,
         onLoadSimilarArtists = itemDetailsViewModel::loadSimilarArtists,
         onRefreshPlaylist = itemDetailsViewModel::refreshPlaylistTracks,
@@ -200,6 +215,7 @@ fun ItemDetails(
     onChapterClick: (Int) -> Unit = {},
     onChildPlayClick: PlayHandler<AppMediaItem> = { _, _, _, _ -> },
     onPlayableItemsSortChanged: (SubItemContext, SortOption) -> Unit = { _, _ -> },
+    onPlayableItemsQueryChanged: (String?) -> Unit = {},
     onTabSelected: (ItemDetailsTab) -> Unit = {},
     onLoadSimilarArtists: () -> Unit = {},
     onRefreshPlaylist: () -> Unit = {},
@@ -267,6 +283,7 @@ fun ItemDetails(
                             is Playlist,
                             is Podcast,
                             is Audiobook,
+                            is MediaCollection,
                             is Genre,
                                 -> {
                                 onNavigateToItem(item.itemId, item.mediaType, item.provider)
@@ -289,6 +306,7 @@ fun ItemDetails(
                     viewModeProvider = viewModeProvider,
                     onToggleViewMode = onToggleViewMode,
                     onPlayableItemsSortChanged = onPlayableItemsSortChanged,
+                    onPlayableItemsQueryChanged = onPlayableItemsQueryChanged,
                     contentPadding = contentPadding,
                     onTabSelected = onTabSelected,
                     onLoadSimilarArtists = onLoadSimilarArtists,
@@ -306,6 +324,7 @@ fun ItemDetails(
 private fun ItemDetailsTab.stringResource(): StringResource? = when (this) {
     ItemDetailsTab.AUDIOBOOK_CHAPTERS -> Res.string.media_type_chapters
     ItemDetailsTab.PODCAST_EPISODES -> Res.string.media_type_episodes
+    ItemDetailsTab.COLLECTION_ITEMS -> Res.string.media_type_audiobooks
     else -> viewMediaType?.stringResource()
 }
 
@@ -328,6 +347,7 @@ private fun ItemContent(
     viewModeProvider: @Composable (MediaType) -> ViewMode,
     onToggleViewMode: (MediaType) -> Unit,
     onPlayableItemsSortChanged: (SubItemContext, SortOption) -> Unit,
+    onPlayableItemsQueryChanged: (String?) -> Unit,
     contentPadding: PaddingValues,
     onTabSelected: (ItemDetailsTab) -> Unit,
     onLoadSimilarArtists: () -> Unit,
@@ -407,15 +427,22 @@ private fun ItemContent(
     }
 
     val heroSlot: @Composable () -> Unit = {
-        ProvideClickActions(ClickContext.DETAIL) {
-            ItemHeader(
-                item = item,
-                colors = colors,
-                providerIconFetcher = providerIconFetcher,
-                onPlayClick = onPlayItemClick,
-                playButtonFocusRequester = playButtonFocusRequester,
-                playButtonFocused = playButtonFocused,
-            )
+        AnimatedVisibility(
+            visible = state.playableItemsQuery == null,
+            enter = expandVertically(),
+            exit = shrinkVertically(),
+        ) {
+            ProvideClickActions(ClickContext.DETAIL) {
+                ItemHeader(
+                    item = item,
+                    colors = colors,
+                    providerIconFetcher = providerIconFetcher,
+                    onPlayClick = onPlayItemClick,
+                    navigateToItem = onNavigateClick,
+                    playButtonFocusRequester = playButtonFocusRequester,
+                    playButtonFocused = playButtonFocused,
+                )
+            }
         }
     }
 
@@ -432,6 +459,10 @@ private fun ItemContent(
                 // force_refresh is a playlist-tracks-only server argument, so no other
                 // media type gets the action.
                 onRefresh = onRefreshPlaylist.takeIf { item is Playlist },
+                query = state.playableItemsQuery,
+                onQueryChanged = onPlayableItemsQueryChanged.takeIf {
+                    item is Album || item is Playlist || item is Podcast
+                },
             )
         },
     ) {
@@ -548,63 +579,70 @@ private fun TabsBar(
         SubItemContext.ALBUM_TRACKS,
         SubItemContext.PLAYLIST_ITEMS,
         SubItemContext.PODCAST_EPISODES,
+        SubItemContext.COLLECTION_ITEMS,
+        SubItemContext.ARTIST_TOP_TRACKS,
+        SubItemContext.ARTIST_ALL_ALBUMS,
+        SubItemContext.ARTIST_LIBRARY_ALBUMS,
             -> playableItemsSortOption
 
         null -> null
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(end = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        PrimaryScrollableTabRow(
-            selectedTabIndex = selectedIndex,
-            containerColor = Color.Transparent,
-            contentColor = controlTint,
-            edgePadding = 0.dp,
-            // Underline under the active tab only, tinted to the control accent (the default
-            // PrimaryIndicator is colorScheme.primary). No full-width bottom divider.
-            indicator = {
-                TabRowDefaults.PrimaryIndicator(
-                    modifier = Modifier.tabIndicatorOffset(selectedIndex),
-                    color = controlTint,
-                )
-            },
-            divider = {},
-            modifier = Modifier.weight(1f),
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            tabs.forEachIndexed { i, tab ->
-                val selected = i == selectedIndex
-                Tab(
-                    selected = selected,
-                    onClick = { onTabSelected(i) },
-                    text = {
-                        Text(
-                            text = tab.stringResource()?.let { stringResource(it) }.orEmpty(),
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                            color = controlTint,
-                        )
+            PrimaryScrollableTabRow(
+                selectedTabIndex = selectedIndex,
+                containerColor = Color.Transparent,
+                contentColor = controlTint,
+                edgePadding = 0.dp,
+                // Underline under the active tab only, tinted to the control accent (the default
+                // PrimaryIndicator is colorScheme.primary). No full-width bottom divider.
+                indicator = {
+                    TabRowDefaults.PrimaryIndicator(
+                        modifier = Modifier.tabIndicatorOffset(selectedIndex),
+                        color = controlTint,
+                    )
+                },
+                divider = {},
+                modifier = Modifier.weight(1f),
+            ) {
+                tabs.forEachIndexed { i, tab ->
+                    val selected = i == selectedIndex
+                    Tab(
+                        selected = selected,
+                        onClick = { onTabSelected(i) },
+                        text = {
+                            Text(
+                                text = tab.stringResource()?.let { stringResource(it) }.orEmpty(),
+                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                                color = controlTint,
+                            )
+                        },
+                    )
+                }
+            }
+
+            if (sortCtx != null && currentSort != null) {
+                ItemSortChip(
+                    sortOption = currentSort,
+                    sortContext = sortCtx,
+                    onSortChanged = { opt ->
+                        onPlayableItemsSortChanged(sortCtx, opt)
                     },
                 )
             }
-        }
-        if (sortCtx != null && currentSort != null) {
-            ItemSortChip(
-                sortOption = currentSort,
-                sortContext = sortCtx,
-                onSortChanged = { opt ->
-                    onPlayableItemsSortChanged(sortCtx, opt)
-                },
-            )
-        }
 
-        currentTab.viewMediaType?.let { viewMediaType ->
-            ViewModeToggle(
-                viewMode = viewModeProvider(viewMediaType),
-                onToggleViewMode = { onToggleViewMode(viewMediaType) },
-            )
+            currentTab.viewMediaType?.let { viewMediaType ->
+                ViewModeToggle(
+                    viewMode = viewModeProvider(viewMediaType),
+                    onToggleViewMode = { onToggleViewMode(viewMediaType) },
+                )
+            }
         }
     }
 }
@@ -647,10 +685,12 @@ private fun TabContent(
         ItemDetailsTab.ALBUM_TRACKS,
         ItemDetailsTab.PLAYLIST_ITEMS,
         ItemDetailsTab.PODCAST_EPISODES,
+        ItemDetailsTab.COLLECTION_ITEMS,
             -> PlayablesTabContent(
             playableItemsState = state.playableItemsState,
             parentItem = item,
             playableItemsSortOption = state.playableItemsSortOption,
+            playableItemsQuery = state.playableItemsQuery,
             viewModeProvider = viewModeProvider,
             onNavigateClick = onNavigateClick,
             onPlayChildClick = onPlayChildClick,
@@ -680,6 +720,7 @@ private fun TabContent(
 
         ItemDetailsTab.AUDIOBOOK_CHAPTERS -> ChaptersTabContent(
             chapters = (item as? Audiobook)?.chapters.orEmpty(),
+            resumeChapterPosition = (item as? Audiobook)?.resumeChapter()?.position,
             onChapterClick = onChapterClick,
             contentPadding = contentPadding,
             heroSlot = heroSlot,
@@ -752,6 +793,7 @@ private fun LazyGridScope.fullSpanItem(
  */
 private inline fun <T> LazyGridScope.tabListBody(
     state: DataState<List<T>>,
+    emptyText: StringResource = Res.string.library_empty,
     crossinline items: LazyGridScope.(List<T>) -> Unit,
 ) {
     val data = when (state) {
@@ -770,7 +812,7 @@ private inline fun <T> LazyGridScope.tabListBody(
         else -> emptyList()
     }
     if (data.isEmpty()) {
-        fullSpanItem(DETAIL_EMPTY_KEY) { CenteredText(stringResource(Res.string.library_empty)) }
+        fullSpanItem(DETAIL_EMPTY_KEY) { CenteredText(stringResource(emptyText)) }
     } else {
         items(data)
     }
@@ -863,6 +905,7 @@ private fun PlayablesTabContent(
     playableItemsState: DataState<List<PlayableItem>>,
     parentItem: AppMediaItem,
     playableItemsSortOption: SortOption?,
+    playableItemsQuery: String?,
     viewModeProvider: @Composable (MediaType) -> ViewMode,
     onNavigateClick: (AppMediaItem) -> Unit,
     onPlayChildClick: PlayHandler<AppMediaItem>,
@@ -878,7 +921,13 @@ private fun PlayablesTabContent(
 ) {
     val viewMode = viewModeProvider(MediaType.TRACK)
     // Shared row body for both the flat and the disc-sectioned layouts.
-    val trackItem: @Composable (index: Int, track: PlayableItem) -> Unit = { index, track ->
+    val canEditPlaylist = parentItem is Playlist && parentItem.isEditable
+    val trackItem: @Composable (track: PlayableItem) -> Unit = { track ->
+        // Removal keys on the server position, so filtering or re-sorting the visible
+        // list can never target the wrong item.
+        val onRemove = track.position
+            ?.takeIf { canEditPlaylist }
+            ?.let { position -> { onRemoveFromPlaylist(parentItem.itemId, position) } }
         when (track) {
             is Track -> TrackWithMenu(
                 item = track,
@@ -888,11 +937,7 @@ private fun PlayablesTabContent(
                 containerItem = parentItem,
                 onPlayOption = onPlayChildClick,
                 playlistActions = playlistActions,
-                onRemoveFromPlaylist = if (parentItem is Playlist && parentItem.isEditable) {
-                    { onRemoveFromPlaylist(parentItem.itemId, index) }
-                } else {
-                    null
-                },
+                onRemoveFromPlaylist = onRemove,
                 libraryActions = libraryActions,
                 providerIconFetcher = providerIconFetcher,
             )
@@ -901,7 +946,30 @@ private fun PlayablesTabContent(
                 item = track,
                 viewMode = viewMode,
                 onPlayOption = onPlayChildClick,
-                playlistActions = null,
+                playlistActions = playlistActions,
+                onRemoveFromPlaylist = onRemove,
+                libraryActions = libraryActions,
+                progressActions = progressActions,
+                providerIconFetcher = providerIconFetcher,
+            )
+
+            is RadioStation -> RadioWithMenu(
+                item = track,
+                viewMode = viewMode,
+                onPlayOption = onPlayChildClick,
+                playlistActions = playlistActions,
+                onRemoveFromPlaylist = onRemove,
+                libraryActions = libraryActions,
+                providerIconFetcher = providerIconFetcher,
+            )
+
+            is Audiobook -> AudiobookWithMenu(
+                item = track,
+                viewMode = viewMode,
+                onNavigateClick = onNavigateClick,
+                onPlayOption = onPlayChildClick,
+                playlistActions = playlistActions,
+                onRemoveFromPlaylist = onRemove,
                 libraryActions = libraryActions,
                 progressActions = progressActions,
                 providerIconFetcher = providerIconFetcher,
@@ -910,8 +978,13 @@ private fun PlayablesTabContent(
     }
     val listSpan: (LazyGridItemSpanScope.() -> GridItemSpan)? =
         if (viewMode == ViewMode.LIST) ({ GridItemSpan(maxLineSpan) }) else null
+    val emptyText = if (playableItemsQuery.isNullOrBlank()) {
+        Res.string.library_empty
+    } else {
+        Res.string.search_no_results
+    }
     DetailGrid(contentPadding, heroSlot, tabsSlot, gridState) {
-        tabListBody(playableItemsState) { tracks ->
+        tabListBody(playableItemsState, emptyText) { tracks ->
             val trackKeys = tracks.playableLazyListOccurrenceKeys()
             // Section a multi-disc album by disc, but only in its natural ("Original") order —
             // any other sort intentionally mixes discs, so headers would lie. Requiring every
@@ -928,7 +1001,7 @@ private fun PlayablesTabContent(
                     if (index == 0 || disc != prevDisc) {
                         fullSpanItem("disc-header-$disc") { DiscHeader(disc) }
                     }
-                    item(key = trackKeys[index], span = listSpan) { trackItem(index, track) }
+                    item(key = trackKeys[index], span = listSpan) { trackItem(track) }
                 }
             } else {
                 itemsIndexed(
@@ -938,7 +1011,7 @@ private fun PlayablesTabContent(
                         ViewMode.LIST -> { _, _ -> GridItemSpan(maxLineSpan) }
                         ViewMode.GRID -> null
                     },
-                ) { index, track -> trackItem(index, track) }
+                ) { _, track -> trackItem(track) }
             }
         }
     }
@@ -1047,7 +1120,10 @@ private fun <T : AppMediaItem> SectionRow(
     providerDetails: (String) -> ProviderDetails?,
 ) {
     val providerNameDisplayString: (String) -> DisplayString = { domain ->
-        (providerDetails(domain)?.name ?: domain).toDisplayString()
+        when (domain) {
+            ServerMediaItem.LIBRARY_PROVIDER -> Res.string.artist_source_all.toDisplayString()
+            else -> (providerDetails(domain)?.name ?: domain).toDisplayString()
+        }
     }
 
     CategoryRow(
@@ -1084,6 +1160,7 @@ private fun <T : AppMediaItem> SectionRow(
 @Composable
 private fun ChaptersTabContent(
     chapters: List<Chapter>,
+    resumeChapterPosition: Int?,
     onChapterClick: (Int) -> Unit,
     contentPadding: PaddingValues,
     heroSlot: @Composable () -> Unit,
@@ -1098,6 +1175,7 @@ private fun ChaptersTabContent(
                 fullSpanItem(DETAIL_CHAPTER_KEY_PREFIX + chapter.position) {
                     ChapterRow(
                         chapter = chapter,
+                        isResumePoint = chapter.position == resumeChapterPosition,
                         onClick = { onChapterClick(chapter.position) },
                     )
                 }
@@ -1119,6 +1197,7 @@ private fun InlineProgress() {
 @Composable
 private fun ChapterRow(
     chapter: Chapter,
+    isResumePoint: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
@@ -1129,9 +1208,19 @@ private fun ChapterRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween,
     ) {
+        if (isResumePoint) {
+            Icon(
+                imageVector = Icons.Default.Schedule,
+                contentDescription = stringResource(Res.string.cd_in_progress),
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(end = 8.dp).size(18.dp),
+            )
+        }
         Text(
             text = chapter.name,
             style = MaterialTheme.typography.bodyLarge,
+            color = if (isResumePoint) MaterialTheme.colorScheme.primary else Color.Unspecified,
+            fontWeight = if (isResumePoint) FontWeight.Bold else null,
             modifier = Modifier.weight(1f),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,

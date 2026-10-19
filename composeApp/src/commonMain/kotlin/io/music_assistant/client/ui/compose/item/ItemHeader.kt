@@ -6,6 +6,7 @@ package io.music_assistant.client.ui.compose.item
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,9 +20,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
@@ -45,6 +48,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -57,8 +61,10 @@ import io.music_assistant.client.data.model.client.items.Album
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.Artist
 import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
 import io.music_assistant.client.imageloader.rememberArtworkRequest
 import io.music_assistant.client.ui.INACTIVE_ALPHA
+import io.music_assistant.client.ui.compose.common.LocalGrantedScopes
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
 import io.music_assistant.client.ui.compose.common.OverflowMenuOption
 import io.music_assistant.client.ui.compose.common.PlayerColors
@@ -73,18 +79,24 @@ import io.music_assistant.client.ui.compose.common.items.LocalClickActionConfig
 import io.music_assistant.client.ui.compose.common.items.PlaylistActions
 import io.music_assistant.client.ui.compose.common.items.localizedSubtitle
 import io.music_assistant.client.ui.compose.common.items.navigationOptions
+import io.music_assistant.client.ui.compose.common.items.rememberArtistNavigation
 import io.music_assistant.client.ui.compose.common.items.resolveDetailOverflowActions
 import io.music_assistant.client.ui.compose.common.items.toOverflowOption
 import io.music_assistant.client.ui.compose.common.painters.rememberPlaceholderPainter
 import io.music_assistant.client.ui.compose.common.providers.ProviderIconFetcher
+import io.music_assistant.client.ui.compose.search.SearchInput
 import io.music_assistant.client.ui.contentColorByLuminance
 import io.music_assistant.client.ui.fadingEdges
 import io.music_assistant.client.ui.inactive
 import io.music_assistant.client.utils.WindowClass
 import musicassistantclient.composeapp.generated.resources.Res
+import musicassistantclient.composeapp.generated.resources.action_go_to_artist
 import musicassistantclient.composeapp.generated.resources.action_similar_artists
+import musicassistantclient.composeapp.generated.resources.cd_close
+import musicassistantclient.composeapp.generated.resources.cd_find_in_list
 import musicassistantclient.composeapp.generated.resources.cd_more
 import musicassistantclient.composeapp.generated.resources.common_back
+import musicassistantclient.composeapp.generated.resources.find_in_list_label
 import musicassistantclient.composeapp.generated.resources.refresh
 import org.jetbrains.compose.resources.stringResource
 
@@ -98,6 +110,7 @@ fun ItemHeader(
     ),
     providerIconFetcher: ProviderIconFetcher? = null,
     onPlayClick: (QueueOption, Boolean) -> Unit = { _, _ -> },
+    navigateToItem: (AppMediaItem) -> Unit = {},
     // Android TV: the detail screen lands initial focus on the play button via this requester and
     // tracks its success through [playButtonFocused].
     playButtonFocusRequester: FocusRequester? = null,
@@ -122,7 +135,7 @@ fun ItemHeader(
         }
 
         val textAndControls = @Composable { textAlign: TextAlign ->
-            ItemText(item, textAlign, Modifier.padding(top = 16.dp))
+            ItemText(item, textAlign, navigateToItem, Modifier.padding(top = 16.dp))
             ItemPlayButton(
                 item,
                 onPlayClick = onPlayClick,
@@ -169,7 +182,11 @@ internal fun ItemTopBar(
     navigateToItem: (AppMediaItem) -> Unit,
     onSimilarArtistsClick: () -> Unit,
     onRefresh: (() -> Unit)? = null,
+    query: String?,
+    onQueryChanged: ((String?) -> Unit)?,
 ) {
+    val searchEnabled = onQueryChanged != null
+
     // Flat fill equal to the header gradient's top color, so the bar reads as one
     // continuous wash with the header below it. Back/overflow icons are NOT control-tinted
     // — just black or white per the composited bar luminance, keeping them legible.
@@ -182,7 +199,15 @@ internal fun ItemTopBar(
     // single-pass color change, in lockstep with the header gradient.
     Box(modifier = Modifier.background(barBg)) {
         TopAppBar(
-            title = {},
+            title = {
+                if (searchEnabled && query != null) {
+                    SearchInput(
+                        query = query,
+                        onQueryChanged = onQueryChanged,
+                        placeholder = stringResource(Res.string.find_in_list_label),
+                    )
+                }
+            },
             colors = TopAppBarDefaults.topAppBarColors(
                 containerColor = Color.Transparent,
                 scrolledContainerColor = Color.Transparent,
@@ -199,21 +224,34 @@ internal fun ItemTopBar(
                 }
             },
             actions = {
-                onRefresh?.let { refresh ->
-                    IconButton(onClick = refresh) {
-                        Icon(
-                            Icons.Default.Refresh,
-                            stringResource(Res.string.refresh),
-                        )
+                if (searchEnabled && query != null) {
+                    IconButton(onClick = { onQueryChanged(null) }) {
+                        Icon(Icons.Default.Close, stringResource(Res.string.cd_close))
                     }
+                } else {
+                    onRefresh?.let { refresh ->
+                        IconButton(onClick = refresh) {
+                            Icon(
+                                Icons.Default.Refresh,
+                                stringResource(Res.string.refresh),
+                            )
+                        }
+                    }
+
+                    if (searchEnabled) {
+                        IconButton(onClick = { onQueryChanged("") }) {
+                            Icon(Icons.Default.Search, stringResource(Res.string.cd_find_in_list))
+                        }
+                    }
+
+                    ItemOverflow(
+                        item = item,
+                        libraryActions = libraryActions,
+                        playlistActions = playlistActions,
+                        navigateToItem = navigateToItem,
+                        onSimilarArtistsClick = onSimilarArtistsClick,
+                    )
                 }
-                ItemOverflow(
-                    item = item,
-                    libraryActions = libraryActions,
-                    playlistActions = playlistActions,
-                    navigateToItem = navigateToItem,
-                    onSimilarArtistsClick = onSimilarArtistsClick,
-                )
             },
         )
     }
@@ -246,8 +284,9 @@ private fun ItemOverflow(
 
     val canonical = resolveDetailOverflowActions(
         item = item,
-        librarySupported = libraryActions != null && item !is Genre,
-        canAddToPlaylist = playlistActions != null,
+        canEditLibrary = LocalGrantedScopes.current.canEditLibrary,
+        librarySupported = libraryActions != null && item !is Genre && item !is MediaCollection,
+        canAddToPlaylist = playlistActions != null && item !is MediaCollection,
     ).map { action ->
         action.toOverflowOption(LocalClickActionConfig.current.context) {
             when (it) {
@@ -296,6 +335,7 @@ private fun ItemOverflow(
 private fun ItemText(
     item: AppMediaItem,
     textAlign: TextAlign,
+    navigateToItem: (AppMediaItem) -> Unit,
     modifier: Modifier,
 ) {
     val horizontalAlignment = if (textAlign == TextAlign.Center) {
@@ -315,7 +355,7 @@ private fun ItemText(
                 .fadingEdges()
                 .basicMarquee()
                 .padding(horizontal = 16.dp),
-            text = item.name,
+            text = (item as? Album)?.year?.let { "${item.name} ($it)" } ?: item.name,
             textAlign = textAlign,
             style = MaterialTheme.typography.titleLarge,
         )
@@ -335,10 +375,24 @@ private fun ItemText(
             }
         }
 
+        // An album's subtitle is its artist list; tapping it does the overflow's "Go to artist".
+        val onSubtitleClick = rememberArtistNavigation(
+            artists = (item as? Album)?.artists.orEmpty(),
+            navigateToItem = navigateToItem,
+        )
         item.localizedSubtitle()?.let {
             Text(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .then(
+                        onSubtitleClick?.let { onClick ->
+                            Modifier.clickable(
+                                onClickLabel = stringResource(Res.string.action_go_to_artist),
+                                role = Role.Button,
+                                onClick = onClick,
+                            )
+                        } ?: Modifier,
+                    )
                     .fadingEdges()
                     .basicMarquee()
                     .padding(horizontal = 16.dp),

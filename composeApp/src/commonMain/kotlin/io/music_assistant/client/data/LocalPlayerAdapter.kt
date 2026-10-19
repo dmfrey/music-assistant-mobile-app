@@ -15,25 +15,19 @@ import io.music_assistant.client.data.model.client.QueueTrack
 import io.music_assistant.client.data.model.client.RepeatMode
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.image
+import io.music_assistant.client.data.model.client.nextMovesQueue
 import io.music_assistant.client.data.model.client.presentationChapter
 import io.music_assistant.client.data.model.client.toAbsoluteSeekSeconds
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.DataState
 import io.music_assistant.client.ui.compose.common.action.PlayerAction
-import io.music_assistant.client.utils.NetworkMonitor
-import io.music_assistant.client.utils.audioDispatcher
-import io.music_assistant.client.utils.createPlatformHttpClient
-import io.music_assistant.sendspin.SendspinPlayer
+import io.music_assistant.client.utils.mapState
 import io.music_assistant.sendspin.api.AudioCodec
-import io.music_assistant.sendspin.api.AudioSink
-import io.music_assistant.sendspin.api.DecoderFactory
 import io.music_assistant.sendspin.api.Endpoint
 import io.music_assistant.sendspin.api.FailureCause
 import io.music_assistant.sendspin.api.LocalPlayerConfig
 import io.music_assistant.sendspin.api.PlayerEvent
 import io.music_assistant.sendspin.api.PlayerState
-import io.music_assistant.sendspin.api.SendspinDeps
-import io.music_assistant.sendspin.api.SendspinKeyStore
 import io.music_assistant.sendspin.api.StopCause
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,7 +52,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 import musicassistantclient.composeapp.generated.resources.Res
-import musicassistantclient.composeapp.generated.resources.media_playback_stopped_connection_lost
+import musicassistantclient.composeapp.generated.resources.sendspin_failed_incompatible_protocol
 import musicassistantclient.composeapp.generated.resources.sendspin_failed_server_rejected
 import musicassistantclient.composeapp.generated.resources.sendspin_failed_setup
 import musicassistantclient.composeapp.generated.resources.sendspin_failed_unauthorized
@@ -77,9 +71,9 @@ import io.music_assistant.sendspin.api.SendspinPlayer as SendspinPlayerApi
  * [MainDataSource] depends on this one-way. The control plane stays on the MA
  * REST API: Sendspin is an audio endpoint (player@v1), not a controller.
  *
- * Registered in `SharedModule` with the key store and [LocalPlayerEndpoints];
- * the `AudioSink` and the `DecoderFactory` come from `AndroidModule` and
- * `IosModule`. [approvePairing] is the app's half of silent pairing: the module
+ * Registered in `SharedModule` with [LocalPlayerEndpoints] and the
+ * [LocalPlayerFactory], which holds the platform ports (sink, decoders, key
+ * store). [approvePairing] is the app's half of silent pairing: the module
  * has no MA API client, so it calls back here to spend the pairing token on
  * `sendspin/pair_web_player`, which pairs the player without a person.
  */
@@ -91,10 +85,7 @@ class LocalPlayerAdapter(
     private val userPreferences: UserPreferences,
     private val errorBus: ErrorMessageBus,
     private val endpoints: LocalPlayerEndpoints,
-    sink: AudioSink,
-    decoders: DecoderFactory,
-    keyStore: SendspinKeyStore,
-    networkMonitor: NetworkMonitor,
+    playerFactory: LocalPlayerFactory,
 ) : CoroutineScope {
     private val log = Logger.withTag("LocalPlayerAdapter")
     private val supervisorJob = SupervisorJob()
@@ -103,9 +94,7 @@ class LocalPlayerAdapter(
     private val _localPlayerData = MutableStateFlow<PlayerData?>(null)
 
     /** The now-playing surfaces read `player.currentMedia`; fall back to the queued track before the first Play. */
-    val localPlayerData: StateFlow<PlayerData?> = _localPlayerData
-        .map { it?.withNowPlayingFallback() }
-        .stateIn(this, SharingStarted.Eagerly, null)
+    val localPlayerData: StateFlow<PlayerData?> = _localPlayerData.mapState { it?.withNowPlayingFallback() }
 
     private val _optimisticQueueChanges = Channel<QueueInfo>(Channel.BUFFERED)
     val optimisticQueueChanges: Flow<QueueInfo> = _optimisticQueueChanges.receiveAsFlow()
@@ -132,19 +121,7 @@ class LocalPlayerAdapter(
         )
     }.stateIn(this, SharingStarted.Eagerly, null)
 
-    val player: SendspinPlayerApi = SendspinPlayer(
-        config = config,
-        deps = SendspinDeps(
-            sink = sink,
-            decoders = decoders,
-            keyStore = keyStore,
-            httpClient = createPlatformHttpClient(),
-            online = networkMonitor.isAvailable,
-            approvePairing = ::approvePairing,
-            audioDispatcher = audioDispatcher,
-        ),
-        scope = this,
-    )
+    val player: SendspinPlayerApi = playerFactory.create(config, ::approvePairing, this)
 
     /** Connection and audio state for the UI; null while disabled. */
     val playerState: StateFlow<PlayerState?> = player.state
@@ -170,6 +147,27 @@ class LocalPlayerAdapter(
     )
     private var pendingPlayTimeoutJob: Job? = null
     private var pausedByInterruption = false
+
+    /** Mirror of the hold this adapter set on [player]; it masks the server's stale "playing". */
+    private val held = MutableStateFlow(false)
+    private val outputHeld: Boolean get() = held.value
+
+    private fun hold(held: Boolean) {
+        this.held.value = held
+        player.hold(held)
+    }
+
+    /**
+     * True while the local player plays, or while a local pause is not yet confirmed by the
+     * server. The hold is that pause: the server still streams until the queued pause lands,
+     * so the MA session must keep reconnecting instead of being torn down in the background.
+     * A stop forced by an empty buffer during an outage is such a pause, like a user's.
+     * Both sources are read live: `combine` can pair a new value of one with a stale value of
+     * the other, and a local pause (hold first, then not playing) would read as a short false.
+     */
+    val wantsSession: StateFlow<Boolean> = combine(_localPlayerData, held) { _, _ ->
+        _localPlayerData.value?.let { it.player.isPlaying || held.value } == true
+    }.stateIn(this, SharingStarted.Eagerly, false)
 
     init {
         launch { player.events.collect(::onPlayerEvent) }
@@ -200,6 +198,7 @@ class LocalPlayerAdapter(
             FailureCause.Unpaired -> Res.string.sendspin_failed_unpaired
             FailureCause.ServerRejected -> Res.string.sendspin_failed_server_rejected
             FailureCause.SetupFailed -> Res.string.sendspin_failed_setup
+            FailureCause.IncompatibleProtocol -> Res.string.sendspin_failed_incompatible_protocol
         }
 
     private suspend fun approvePairing(pairingToken: String) {
@@ -222,10 +221,11 @@ class LocalPlayerAdapter(
             }
 
             is PlayerEvent.PlaybackStopped -> when (event.cause) {
+                // A local pause like a user's: held, queued, and answered with a pause if the
+                // server starts a stream first. The player never resumes on its own.
                 StopCause.Starved -> {
                     log.w { "Playback stopped: buffer ran dry while disconnected" }
                     pauseLocalIfPlaying()
-                    errorBus.emit(getString(Res.string.media_playback_stopped_connection_lost))
                 }
 
                 StopCause.FocusLost -> {
@@ -244,6 +244,21 @@ class LocalPlayerAdapter(
 
             PlayerEvent.ServerRefreshNeeded -> _needsServerRefresh.emit(Unit)
 
+            // The local pause never reached the server (lost, or the session was reset):
+            // send it again. Built from the event's id, because the player data may be gone.
+            is PlayerEvent.StreamStartedWhileHeld -> {
+                log.i { "Server started a stream while held: pausing ${event.playerId}" }
+                optimisticPause()
+                launch {
+                    // Not a user pause: a Play that waits for this reconnect still wins.
+                    commands.sendOrQueue(
+                        PlayerAction.Pause,
+                        Request.Player.simpleCommand(playerId = event.playerId, command = "pause"),
+                        userIntent = false,
+                    )
+                }
+            }
+
             is PlayerEvent.Warning -> log.w { "Local player warning: ${event.code}" }
         }
     }
@@ -257,12 +272,42 @@ class LocalPlayerAdapter(
      */
     fun handleLocalCommand(data: PlayerData, action: PlayerAction) {
         val resolved = playerRequestFactory.resolve(data, resolveLocalToggle(data, action))
+        if (resolved.movesPlayback) {
+            sendOrDrop(data, resolved)
+            return
+        }
         applyOptimisticUpdate(data, resolved)
         launch {
             val request = playerRequestFactory.buildRequest(data, resolved) ?: return@launch
             commands.sendOrQueue(resolved, request)
         }
     }
+
+    /**
+     * Play, Next, Previous and seeks go to a reachable server or nowhere. While the session is
+     * not ready, the optimistic update (it lifts the hold) waits for the send, so a dropped
+     * command changes nothing. A Play that lifts a hold pauses first: the server may still play
+     * the timeline that the hold discarded, and a plain play does nothing there. The pause and
+     * play give a fresh stream at once.
+     */
+    private fun sendOrDrop(data: PlayerData, action: PlayerAction) {
+        val request = playerRequestFactory.buildRequest(data, action) ?: return
+        val resync = playerRequestFactory.buildRequest(data, PlayerAction.Pause)
+            .takeIf { action == PlayerAction.Play && outputHeld }
+        val appliedNow = apiClient.isReadyForCommands.value
+        if (appliedNow) applyOptimisticUpdate(data, action)
+        launch {
+            commands.sendOrDrop(listOfNotNull(resync, request)) {
+                if (!appliedNow) applyOptimisticUpdate(data, action)
+            }
+        }
+    }
+
+    /**
+     * A play request from another surface (library, car, Siri, queue item) targets the local
+     * player: lift the hold before the server's stream arrives, or it would be paused again.
+     */
+    fun onPlaybackRequested() = hold(false)
 
     /** Platform remote command (Control Center, lock screen, CarPlay). */
     fun onRemoteCommand(command: String) {
@@ -322,38 +367,62 @@ class LocalPlayerAdapter(
             is PlayerAction.ToggleCrossfade -> updateOptimisticQueueInfo { it.copy(crossfadeEnabled = !action.current) }
 
             is PlayerAction.SeekTo -> {
+                hold(false) // the server may start playback from the new position
                 // Freeze until Sendspin confirms audio, not merely until the server echoes the seek.
                 updateOptimisticQueueInfo { it.copy(elapsedTime = action.position.toDouble()) }
                 data.queueInfo?.id?.let { queueId ->
-                    positionTracker.setOptimisticSeek(
+                    val freezeId = positionTracker.setOptimisticSeek(
                         queueId = queueId,
                         elapsedSec = action.position.toDouble(),
                         durationSec = data.queueInfo.currentItem?.track?.duration,
                         speed = data.queueInfo.playbackSpeed,
                     )
+                    releaseIfUnconfirmed(queueId, freezeId)
                 }
             }
 
-            PlayerAction.Next, PlayerAction.Previous -> data.queueInfo?.id?.let { queueId ->
-                positionTracker.setOptimisticTrackChange(
-                    queueId = queueId,
-                    elapsedSec = 0.0,
-                    durationSec = data.queueInfo.currentItem?.track?.duration,
-                    speed = data.queueInfo.playbackSpeed,
-                )
-            }
+            // The server ignores a next on the last item, so nothing would release a 0:00 freeze.
+            PlayerAction.Next -> if (data.queueInfo?.nextMovesQueue != false) optimisticTrackChange(data)
+            PlayerAction.Previous -> optimisticTrackChange(data)
 
             else -> Unit
         }
     }
 
+    private fun optimisticTrackChange(data: PlayerData) {
+        hold(false) // the server starts the next track
+        data.queueInfo?.id?.let { queueId ->
+            val freezeId = positionTracker.setOptimisticTrackChange(
+                queueId = queueId,
+                elapsedSec = 0.0,
+                durationSec = data.queueInfo.currentItem?.track?.duration,
+                speed = data.queueInfo.playbackSpeed,
+            )
+            releaseIfUnconfirmed(queueId, freezeId)
+        }
+    }
+
+    /** A server that ignored or rejected the command never reports the frozen position. */
+    private fun releaseIfUnconfirmed(queueId: String, freezeId: Long) {
+        launch {
+            delay(PlayerPositionTracker.SERVER_CONFIRM_WINDOW)
+            positionTracker.releaseUnconfirmed(queueId, freezeId)
+        }
+    }
+
     /** The spinner is the only feedback an offline Play gives; [armPendingPlayTimeout] bounds it. */
     private fun optimisticPlay() {
+        hold(false)
         _localPlayerData.update { current -> current?.copy(pendingPlay = true) }
         armPendingPlayTimeout()
     }
 
+    /**
+     * Silences the output before the request leaves: the server may be
+     * unreachable or slow, and the buffer can hold minutes of audio.
+     */
     private fun optimisticPause() {
+        hold(true)
         cancelPendingPlayTimeout()
         _localPlayerData.update { current ->
             current?.copy(player = current.player.copy(isPlaying = false), pendingPlay = false)
@@ -363,12 +432,17 @@ class LocalPlayerAdapter(
     // --- Server event reconciliation ---
 
     fun onServerPlayerUpdate(player: Player) {
-        if (player.isPlaying) cancelPendingPlayTimeout()
+        if (player.isPlaying) {
+            cancelPendingPlayTimeout()
+        } else {
+            // The server caught up with the local pause: its next stream/start is a real play.
+            hold(false)
+        }
         _localPlayerData.update { current ->
             if (current == null) {
                 if (!settings.sendspinEnabled.value) return@update null
                 return@update PlayerData(
-                    player = player,
+                    player = player.copy(isPlaying = player.isPlaying && !outputHeld),
                     queue = DataState.NoData(),
                     parentBind = null,
                     childrenBinds = emptyList(),
@@ -383,7 +457,12 @@ class LocalPlayerAdapter(
                 queueId != null &&
                 positionTracker.isFrozenUntilConfirmed(queueId)
             current.copy(
-                player = if (maskHandoffPause) player.copy(isPlaying = true) else player,
+                player = when {
+                    // Until the server sees the local pause, its "playing" is stale.
+                    outputHeld -> player.copy(isPlaying = false)
+                    maskHandoffPause -> player.copy(isPlaying = true)
+                    else -> player
+                },
                 pendingPlay = if (player.isPlaying) false else current.pendingPlay,
             )
         }
@@ -458,7 +537,10 @@ class LocalPlayerAdapter(
         }
     }
 
-    /** Full reset: drop the optimistic UI state and pending offline commands (logout, disable). */
+    /**
+     * Full reset: drop the optimistic UI state and pending offline commands (logout, disable).
+     * The hold stays: a pause lost here is sent again on the next stream/start while held.
+     */
     fun clearState() {
         _localPlayerData.update { null }
         launch { commands.clear() }

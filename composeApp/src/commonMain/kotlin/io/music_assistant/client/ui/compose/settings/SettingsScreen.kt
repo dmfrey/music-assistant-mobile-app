@@ -86,6 +86,7 @@ import io.music_assistant.client.ui.compose.common.DisplayString
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
 import io.music_assistant.client.ui.compose.common.OverflowMenuOption
 import io.music_assistant.client.ui.compose.common.TvFocusFlow
+import io.music_assistant.client.ui.compose.common.UnsupportedInstallCard
 import io.music_assistant.client.ui.compose.common.clearFocusOnScroll
 import io.music_assistant.client.ui.compose.common.localizedTitle
 import io.music_assistant.client.ui.compose.common.rememberTvFocusFlow
@@ -96,6 +97,7 @@ import io.music_assistant.client.ui.compose.nav.BackHandler
 import io.music_assistant.client.ui.compose.nav.TopBarLayout
 import io.music_assistant.client.ui.theme.ThemeSetting
 import io.music_assistant.client.ui.theme.ThemeViewModel
+import io.music_assistant.client.utils.AppVersion
 import io.music_assistant.client.utils.DataConnectionState
 import io.music_assistant.client.utils.LocalNetworkOnboardingResources
 import io.music_assistant.client.utils.SessionState
@@ -127,6 +129,8 @@ import musicassistantclient.composeapp.generated.resources.settings_about_descri
 import musicassistantclient.composeapp.generated.resources.settings_about_learn_more
 import musicassistantclient.composeapp.generated.resources.settings_allow_landscape
 import musicassistantclient.composeapp.generated.resources.settings_allow_landscape_hint
+import musicassistantclient.composeapp.generated.resources.settings_app_documentation
+import musicassistantclient.composeapp.generated.resources.settings_app_version_info
 import musicassistantclient.composeapp.generated.resources.settings_buffer_size
 import musicassistantclient.composeapp.generated.resources.settings_codec_preference
 import musicassistantclient.composeapp.generated.resources.settings_connect
@@ -338,6 +342,8 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                     .windowInsetsPadding(WindowInsets.navigationBars),
                 verticalArrangement = Arrangement.spacedBy(if (isTv) 8.dp else 16.dp),
             ) {
+                AppVersionSection(viewModel.appVersion)
+
                 var ipAddress by remember { mutableStateOf("") }
                 var port by remember { mutableStateOf(Defaults.PORT.toString()) }
                 var isTls by remember { mutableStateOf(false) }
@@ -396,11 +402,11 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                     }
                 }
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    if (!isAuthenticated) {
+                if (!isAuthenticated) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
                         OutlinedButton(
                             onClick = exitApp,
                             modifier = if (isTv) {
@@ -659,6 +665,25 @@ internal fun SectionTitle(text: String) {
 }
 
 @Composable
+private fun AppVersionSection(appVersion: AppVersion) {
+    val uriHandler = LocalUriHandler.current
+    SectionCard {
+        Text(
+            text = stringResource(Res.string.settings_app_version_info, appVersion.name, appVersion.code),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
+        )
+        Spacer(modifier = Modifier.size(4.dp))
+        Text(
+            text = stringResource(Res.string.settings_app_documentation),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.clickable { uriHandler.openUri("https://music-assistant.github.io/mobile-app/") },
+        )
+    }
+}
+
+@Composable
 private fun AboutSection() {
     val uriHandler = LocalUriHandler.current
     SectionCard {
@@ -743,6 +768,7 @@ private fun ConnectionMethodTabs(
     val selectedTab = if (preferredMethod == "webrtc") 1 else 0
     val webrtcRemoteId by viewModel.webrtcRemoteId.collectAsStateWithLifecycle()
     var showHistoryDialog by remember { mutableStateOf(false) }
+    val clientCertificateAlias by viewModel.clientCertificateAlias.collectAsStateWithLifecycle()
 
     val directHasToken = port.toIntOrNull()
         ?.let {
@@ -814,6 +840,8 @@ private fun ConnectionMethodTabs(
                     onConnect = onDirectConnect,
                     enabled = directConnectEnabled,
                     onShowHistory = { showHistoryDialog = true },
+                    clientCertificateAlias = clientCertificateAlias,
+                    onClientCertificateAliasChange = viewModel::setClientCertificateAlias,
                 )
             }
 
@@ -925,6 +953,8 @@ fun DirectConnectionContent(
     onConnect: () -> Unit,
     enabled: Boolean,
     onShowHistory: () -> Unit,
+    clientCertificateAlias: String?,
+    onClientCertificateAliasChange: (String?) -> Unit,
 ) {
     if (isTelevisionDevice()) {
         DirectConnectionContentTv(
@@ -1025,6 +1055,15 @@ fun DirectConnectionContent(
                 .testTag("Config-Tls"),
         )
         Text(stringResource(Res.string.settings_use_tls))
+    }
+
+    if (isTls) {
+        ClientCertificateSetting(
+            host = ipAddress.ifBlank { Defaults.URI },
+            port = port.toIntOrNull() ?: -1,
+            alias = clientCertificateAlias,
+            onAliasChange = onClientCertificateAliasChange,
+        )
     }
 
     // Live preview of the address the app will actually contact.
@@ -1398,6 +1437,9 @@ private fun ServerInfoSection(
                         color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f),
                         modifier = Modifier.padding(bottom = 12.dp),
                     )
+                    if (server.unsupportedInstall) {
+                        UnsupportedInstallCard(modifier = Modifier.padding(bottom = 12.dp))
+                    }
                 }
 
                 OutlinedButton(

@@ -182,6 +182,16 @@ class SettingsRepository(
         _playersSorting.update { newValue }
     }
 
+    private val _hideUnavailablePlayers = MutableStateFlow(
+        settings.getBoolean("hide_unavailable_players", false),
+    )
+    val hideUnavailablePlayers = _hideUnavailablePlayers.asStateFlow()
+
+    fun setHideUnavailablePlayers(hide: Boolean) {
+        settings.putBoolean("hide_unavailable_players", hide)
+        _hideUnavailablePlayers.update { hide }
+    }
+
     // Home-screen rows: visibility + user-defined order in a single ordered list.
     // Order = display sort; enabled=false = hidden. JSON-encoded because folder
     // ids are arbitrary server strings (may contain the delimiters a flat string
@@ -411,6 +421,17 @@ class SettingsRepository(
         _localNetworkOnboardingShown.update { true }
     }
 
+    // One-time hint that the player pager swipes between players.
+    private val _playerSwipeHintShown = MutableStateFlow(
+        settings.getBoolean("player_swipe_hint_shown", false),
+    )
+    val playerSwipeHintShown = _playerSwipeHintShown.asStateFlow()
+
+    fun setPlayerSwipeHintShown() {
+        settings.putBoolean("player_swipe_hint_shown", true)
+        _playerSwipeHintShown.update { true }
+    }
+
     // Sendspin settings
     private val _sendspinEnabled = MutableStateFlow(
         settings.getBoolean("sendspin_enabled", false),
@@ -579,6 +600,22 @@ class SettingsRepository(
     fun setPreferredConnectionMethod(method: String) {
         settings.putString("preferred_connection_method", method)
         _preferredConnectionMethod.update { method }
+    }
+
+    /**
+     * Platform reference to the client certificate sent when a server asks for one (mTLS),
+     * for example the Android KeyChain alias. One for all servers: the server is unknown
+     * until the connection succeeds, and a certificate goes only to a server that asks.
+     */
+    private val _clientCertificateAlias = MutableStateFlow(
+        secrets.getStringOrNull(CLIENT_CERTIFICATE_ALIAS_KEY),
+    )
+    val clientCertificateAlias = _clientCertificateAlias.asStateFlow()
+
+    fun setClientCertificateAlias(alias: String?) {
+        alias?.let { secrets.putString(CLIENT_CERTIFICATE_ALIAS_KEY, it) }
+            ?: secrets.remove(CLIENT_CERTIFICATE_ALIAS_KEY)
+        _clientCertificateAlias.update { alias }
     }
 
     // WebRTC Remote Access settings
@@ -750,19 +787,26 @@ class SettingsRepository(
     }
 
     // Per-MediaType library-list sort, persisted like view mode and filters. The
-    // ViewModel is the only writer, so a plain get/set is enough — no flow.
-    fun getSortOption(mediaType: MediaType): SortOption {
-        val stored = settings.getStringOrNull(librarySortKey(mediaType))?.let { parseSortOption(it) }
-        // A field dropped from SortConfig by a later app version must not stick.
-        return stored?.takeIf { it.field in SortConfig.fieldsFor(mediaType) }
-            ?: SortConfig.defaultFor(mediaType)
-    }
+    // ViewModel is the only writer, so a plain get/set is enough — no flow. The fields depend on
+    // the server, so `LibrarySortMenu.resolve` checks the value, not this repository.
+    fun getSortOption(mediaType: MediaType): SortOption? =
+        settings.getStringOrNull(librarySortKey(mediaType))?.let { parseSortOption(it) }
 
     fun setSortOption(mediaType: MediaType, option: SortOption) {
         settings.putString(librarySortKey(mediaType), serializeSortOption(option))
     }
 
     private fun librarySortKey(mediaType: MediaType) = "library_sort_${mediaType.name}"
+
+    // Audiobook-library display choice; the library ViewModel is the only writer, like sort.
+    fun getSeriesGrouping(): SeriesGrouping =
+        settings.getStringOrNull(SERIES_GROUPING_KEY)
+            ?.let { runCatching { SeriesGrouping.valueOf(it) }.getOrNull() }
+            ?: SeriesGrouping.FLAT
+
+    fun setSeriesGrouping(grouping: SeriesGrouping) {
+        settings.putString(SERIES_GROUPING_KEY, grouping.name)
+    }
 
     fun getSortOption(context: SubItemContext): SortOption {
         // A fixed-order context has no chip, so a value persisted by an older app version could
@@ -795,6 +839,8 @@ class SettingsRepository(
         // when it authenticates to the user's server or identifies it.
         private const val TOKEN_PREFIX = "token_"
         private const val SERVER_ID_PREFIX = "id_"
+        private const val CLIENT_CERTIFICATE_ALIAS_KEY = "client_certificate_alias"
+        private const val SERIES_GROUPING_KEY = "library_series_grouping"
         private val SECRET_STRING_KEYS = listOf(
             "host",
             "webrtc_remote_id",

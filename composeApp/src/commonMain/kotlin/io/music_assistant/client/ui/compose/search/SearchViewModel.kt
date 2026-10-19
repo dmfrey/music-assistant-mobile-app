@@ -4,7 +4,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import co.touchlab.kermit.Logger
 import io.music_assistant.client.api.Request
-import io.music_assistant.client.api.ServiceClient
 import io.music_assistant.client.data.MainDataSource
 import io.music_assistant.client.data.model.client.MediaType
 import io.music_assistant.client.data.model.client.QueueOption
@@ -17,7 +16,11 @@ import io.music_assistant.client.data.model.client.items.Playlist
 import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.data.model.client.items.RadioStation
 import io.music_assistant.client.data.model.client.items.Track
+import io.music_assistant.client.data.play.PlayDispatcher
+import io.music_assistant.client.data.play.PlayRequest
+import io.music_assistant.client.data.repository.MediaItemChange
 import io.music_assistant.client.data.repository.MediaItemRepository
+import io.music_assistant.client.data.repository.favoriteAfter
 import io.music_assistant.client.ui.Timings
 import io.music_assistant.client.ui.compose.common.DataState
 import kotlinx.coroutines.FlowPreview
@@ -52,7 +55,7 @@ data class GlobalSearchRequest(val query: String, val mediaType: MediaType?)
 
 @OptIn(FlowPreview::class, ExperimentalAtomicApi::class)
 class SearchViewModel(
-    private val apiClient: ServiceClient,
+    private val playDispatcher: PlayDispatcher,
     private val mainDataSource: MainDataSource,
     private val mediaItemRepository: MediaItemRepository,
 ) : ViewModel() {
@@ -101,7 +104,7 @@ class SearchViewModel(
         // Listen to real-time library changes; refresh any tracks already shown.
         viewModelScope.launch {
             mediaItemRepository.itemChanges.collect { change ->
-                (change.item as? Track)?.let { updateSearchResultsIfNeeded(it) }
+                (change.item as? Track)?.let { updateSearchResultsIfNeeded(it, change) }
             }
         }
     }
@@ -154,29 +157,31 @@ class SearchViewModel(
         option: QueueOption,
         radio: Boolean,
     ) {
-        viewModelScope.launch {
-            mainDataSource.selectedPlayer?.queueOrPlayerId?.let { queueId ->
-                track.mediaUri?.let { mediaUri ->
-                    Logger.withTag("PlayDispatch")
-                        .i { "SearchViewModel: uri=$mediaUri option=$option radio=$radio queue=$queueId" }
-                    apiClient.sendRequest(
-                        Request.Library.play(
-                            media = listOf(mediaUri),
-                            queueOrPlayerId = queueId,
-                            option = option,
-                            endlessMixMode = radio && track !is Genre,
-                        ),
-                    )
-                }
+        mainDataSource.selectedPlayer?.queueOrPlayerId?.let { queueId ->
+            track.mediaUri?.let { mediaUri ->
+                Logger.withTag("PlayDispatch")
+                    .i { "SearchViewModel: uri=$mediaUri option=$option radio=$radio queue=$queueId" }
+                playDispatcher.play(
+                    PlayRequest(
+                        queueOrPlayerId = queueId,
+                        media = listOf(mediaUri),
+                        option = option,
+                        endlessMixMode = radio && track !is Genre,
+                    ),
+                )
             }
         }
     }
 
-    private fun updateSearchResultsIfNeeded(changed: Track) {
+    private fun updateSearchResultsIfNeeded(changed: Track, change: MediaItemChange) {
         val resultsData = (_state.value.resultsState as? DataState.Data)?.data
         if (resultsData != null) {
             val updatedTracks = resultsData.tracks.map { track ->
-                if (track.hasAnyMappingFrom(changed)) changed else track
+                if (track.hasAnyMappingFrom(changed)) {
+                    changed.withFavorite(change.favoriteAfter(track.favorite))
+                } else {
+                    track
+                }
             }
             _state.update {
                 it.copy(resultsState = DataState.Data(resultsData.copy(tracks = updatedTracks)))

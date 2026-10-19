@@ -14,8 +14,8 @@ android {
         applicationId = "io.music_assistant.client"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 15
-        versionName = "0.14.0"
+        versionCode = 17
+        versionName = "0.16.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     packaging {
@@ -134,8 +134,10 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.coil.compose)
     testImplementation(libs.robolectric)
     testImplementation(libs.ktor.client.json)
+    testImplementation(libs.ktor.client.mock)
     testImplementation(libs.koin.test)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.compose.components.resources)

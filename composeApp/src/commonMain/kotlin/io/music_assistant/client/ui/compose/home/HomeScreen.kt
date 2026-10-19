@@ -46,20 +46,12 @@ import compose.icons.TablerIcons
 import compose.icons.tablericons.GripVertical
 import io.music_assistant.client.data.model.client.ClickContext
 import io.music_assistant.client.data.model.client.Shortcut
-import io.music_assistant.client.data.model.client.items.Album
 import io.music_assistant.client.data.model.client.items.AppMediaItem
-import io.music_assistant.client.data.model.client.items.Artist
-import io.music_assistant.client.data.model.client.items.Audiobook
-import io.music_assistant.client.data.model.client.items.Genre
-import io.music_assistant.client.data.model.client.items.Playlist
-import io.music_assistant.client.data.model.client.items.Podcast
-import io.music_assistant.client.data.model.client.items.PodcastEpisode
-import io.music_assistant.client.data.model.client.items.RadioStation
-import io.music_assistant.client.data.model.client.items.Track
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.CenteredProgress
 import io.music_assistant.client.ui.compose.common.CenteredText
 import io.music_assistant.client.ui.compose.common.DataState
+import io.music_assistant.client.ui.compose.common.UnsupportedInstallCard
 import io.music_assistant.client.ui.compose.common.items.CategoryRow
 import io.music_assistant.client.ui.compose.common.items.ItemCategory
 import io.music_assistant.client.ui.compose.common.items.ProvideClickActions
@@ -93,11 +85,13 @@ fun HomeScreen(
     providerIconFetcher: ProviderIconFetcher,
     actionsViewModel: ActionsViewModel,
     state: HomeScreenState,
+    onOpenSettings: () -> Unit,
     // Android TV: routes D-pad DOWN out of the last row to the persistent mini-player, which
     // otherwise isn't reachable via D-pad (it's a separate overlay, not an ordinary sibling).
     floatingBarFocusRequester: FocusRequester? = null,
 ) {
     val homeScreenState by homeScreenViewModel.state.collectAsStateWithLifecycle()
+    val unsupportedInstallServerId by homeScreenViewModel.unsupportedInstallServerId.collectAsStateWithLifecycle()
 
     // Reconciled, enabled-first ordering. Authoritative for normal-mode display.
     val recommendationsState = homeScreenState.recommendations
@@ -114,7 +108,7 @@ fun HomeScreen(
     val enabledByKey =
         remember(items) { items.associate { it.first.category.lazyListKey to it.second } }
 
-    var editMode by remember { mutableStateOf(false) }
+    var editMode by state::editMode
     val displayedData =
         if (editMode) items.map { it.first } else working.filter { it.second }.map { it.first }
 
@@ -186,6 +180,16 @@ fun HomeScreen(
                     state = state.lazyListState,
                     contentPadding = contentPadding,
                 ) {
+                    // Hidden in edit mode: the reorder callback uses list indices of the rows only.
+                    unsupportedInstallServerId?.takeIf { !editMode }?.let { serverId ->
+                        item(key = UNSUPPORTED_INSTALL_KEY) {
+                            UnsupportedInstallCard(
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                onOpenSettings = onOpenSettings,
+                                onDismiss = { homeScreenViewModel.dismissUnsupportedInstall(serverId) },
+                            )
+                        }
+                    }
                     items(
                         items = displayedData,
                         key = { it.category.lazyListKey },
@@ -254,6 +258,8 @@ fun HomeScreen(
     }
 }
 
+private const val UNSUPPORTED_INSTALL_KEY = "unsupported_install_card"
+
 /**
  * One reconciled home row: its display/reorder identity ([category], valid before
  * the row's items resolve) plus whether those items are still loading, which
@@ -278,17 +284,8 @@ internal fun getCategories(
             // A still-loading row stays visible as a placeholder; a resolved row
             // must contain something the home page can render.
             .filter { row ->
-                row.items is DataState.Loading || row.resolvedItems?.any { item ->
-                    item is Track ||
-                            item is Artist ||
-                            item is Album ||
-                            item is Playlist ||
-                            item is Audiobook ||
-                            item is Podcast ||
-                            item is PodcastEpisode ||
-                            item is RadioStation ||
-                            item is Genre
-                } == true
+                row.items is DataState.Loading ||
+                        row.resolvedItems?.any { it.isHomeRowItem() } == true
             }
             .distinctBy { it.folder.lazyListKey() }
             .map { row ->
@@ -365,6 +362,9 @@ class HomeScreenState(
     val lazyListState: LazyListState,
     val coroutineScope: CoroutineScope,
 ) : ScreenState {
+    /** Read by the navigation root, which hides the floating player bar while editing. */
+    var editMode by mutableStateOf(false)
+
     override fun reset() {
         coroutineScope.launch {
             topAppBarState.heightOffset = 0f

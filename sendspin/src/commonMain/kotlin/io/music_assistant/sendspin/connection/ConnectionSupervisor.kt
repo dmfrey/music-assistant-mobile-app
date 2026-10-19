@@ -2,8 +2,10 @@ package io.music_assistant.sendspin.connection
 
 import co.touchlab.kermit.Logger
 import io.music_assistant.sendspin.api.Endpoint
+import io.music_assistant.sendspin.api.FailureCause
 import io.music_assistant.sendspin.api.MonotonicClock
 import io.music_assistant.sendspin.identity.SendspinTrustStore
+import io.music_assistant.sendspin.noise.UnsupportedCoreVersionException
 import io.music_assistant.sendspin.noise.crypto.NoiseCrypto
 import io.music_assistant.sendspin.session.Activation
 import io.music_assistant.sendspin.session.NoiseSession
@@ -19,6 +21,7 @@ import io.music_assistant.sendspin.wire.ServerMessage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -71,6 +74,11 @@ internal class ConnectionSupervisor(
         var consecutiveRejections = 0
         var lastReason: DropReason = DropReason.ServerClosed
         try {
+            if (endpoint is Endpoint.Unsupported) {
+                logger.e { "Sendspin connection stopped: ${endpoint.reason}" }
+                _state.value = ConnectionState.Failed(FailureCause.IncompatibleProtocol)
+                awaitCancellation()
+            }
             while (true) {
                 if (!online.value) {
                     _state.value = ConnectionState.WaitingForNetwork(attempt, lastReason)
@@ -130,6 +138,10 @@ internal class ConnectionSupervisor(
     ): DropReason {
         val transport = try {
             connector.connect(endpoint, trustStore.clientId)
+        } catch (e: TimeoutCancellationException) {
+            // A timeout inside connect() is a failed attempt, not this coroutine being cancelled;
+            // rethrowing it would end the retry loop for good.
+            return DropReason.ConnectFailed(e)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Throwable) {
@@ -165,6 +177,9 @@ internal class ConnectionSupervisor(
                 withTimeoutOrNull(GOODBYE_TIMEOUT_MILLIS) { session.goodbye(goodbyeOnCancel()) }
             }
             throw e
+        } catch (e: UnsupportedCoreVersionException) {
+            logger.e(e) { "Sendspin connection stopped: incompatible protocol" }
+            DropReason.IncompatibleProtocol(e)
         } catch (e: SessionRejected) {
             DropReason.Rejected(e.reason)
         } catch (e: TransportLost) {

@@ -2,6 +2,14 @@
 
 package io.music_assistant.client.ui.compose.home
 
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -27,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.input.InputMode
@@ -43,6 +52,9 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberDecoratedNavEntries
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.runtime.rememberSaveableStateHolderNavEntryDecorator
+import androidx.navigation3.scene.Scene
+import androidx.navigation3.ui.defaultPopTransitionSpec
+import androidx.navigation3.ui.defaultTransitionSpec
 import androidx.savedstate.serialization.SavedStateConfiguration
 import io.music_assistant.client.api.DeepLinkBus
 import io.music_assistant.client.api.DeepLinkDestination
@@ -53,6 +65,7 @@ import io.music_assistant.client.data.model.client.items.Album
 import io.music_assistant.client.data.model.client.items.Artist
 import io.music_assistant.client.data.model.client.items.Audiobook
 import io.music_assistant.client.data.model.client.items.Genre
+import io.music_assistant.client.data.model.client.items.MediaCollection
 import io.music_assistant.client.data.model.client.items.Playlist
 import io.music_assistant.client.data.model.client.items.Podcast
 import io.music_assistant.client.data.model.client.items.RecommendationFolder
@@ -64,6 +77,7 @@ import io.music_assistant.client.ui.compose.common.rememberToastState
 import io.music_assistant.client.ui.compose.common.viewmodel.ActionsViewModel
 import io.music_assistant.client.ui.compose.home.players.DspSettingsViewModel
 import io.music_assistant.client.ui.compose.home.players.PlayersPager
+import io.music_assistant.client.ui.compose.home.players.QueueDjViewModel
 import io.music_assistant.client.ui.compose.item.ItemDetailsScreen
 import io.music_assistant.client.ui.compose.item.ItemDetailsViewModel
 import io.music_assistant.client.ui.compose.item.ItemListScreen
@@ -132,10 +146,12 @@ fun MainNavigationRoot(
     viewModeViewModel: ViewModeViewModel = koinViewModel(),
     dspSettingsViewModel: DspSettingsViewModel = koinViewModel(),
     providerViewModel: ProviderViewModel = koinViewModel(),
+    queueDjViewModel: QueueDjViewModel = koinViewModel(),
     goToSettings: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
     val toastState = rememberToastState()
+    val playerActionsViewModel: ActionsViewModel = koinViewModel(key = "player-actions")
     val errorBus: ErrorMessageBus = koinInject()
     val deepLinkBus: DeepLinkBus = koinInject()
     val volumeButtonService: VolumeButtonService = koinInject()
@@ -271,15 +287,18 @@ fun MainNavigationRoot(
                 multiBackStack.resetCurrentBackStack()
             }
 
-            DeepLinkDestination.Players -> {
+            is DeepLinkDestination.Players -> {
                 // Expand the now-playing layout over the current tab (the
                 // FloatingBar is global, so no tab switch needed). The pager
-                // renders its own empty state if no player is present. Open the
-                // queue too: this path is the "return to a playing app" entry
+                // renders its own empty state if no player is present. A named
+                // player is selected in the ViewModel scope: consume() below
+                // restarts this effect, which would cancel the lookup. Open the
+                // queue too: this path is also the "return to a playing app" entry
                 // (notification tap / TV now-playing card), where the queue
                 // alongside the transport is the useful landing.
                 playerExpanded = true
                 isQueueExpanded = true
+                dest.playerIdOrName?.let(homeScreenViewModel::selectPlayerByIdOrName)
             }
         }
         deepLinkBus.consume(dest)
@@ -336,6 +355,11 @@ fun MainNavigationRoot(
         ),
     )
 
+    // A root screen in edit mode hides the collapsed bar so it does not cover drag targets.
+    // An expanded player (for example from a deep link) always stays visible.
+    val rootScreenEditing = homeScreenState.value?.editMode == true ||
+        libraryScreenState.value?.editMode == true
+
     Box(modifier = Modifier.fillMaxSize()) {
         AdaptiveNavigationBarLayout(
             showNavigation = !playerExpanded,
@@ -347,41 +371,65 @@ fun MainNavigationRoot(
             FloatingBarLayout(
                 modifier = Modifier.padding(scaffoldContentPadding),
                 floatingBar = {
-                    FloatingBar(
-                        expanded = playerExpanded,
-                        onExpand = onExpandPlayer,
-                        focusRequester = floatingBarFocusRequester,
-                        upFocusRequester = selectedNavItemFocusRequester,
-                        content = { expanded, contentPadding ->
-                            PlayersPager(
-                                playerPagerState = playerPagerState,
-                                state = playersState,
-                                homeScreenViewModel = homeScreenViewModel,
-                                actionsViewModel = actionsViewModel,
-                                dspSettingsViewModel = dspSettingsViewModel,
-                                expanded = expanded,
-                                onClose = { playerExpanded = false },
-                                contentPadding = contentPadding,
-                                isQueueExpanded = isQueueExpanded,
-                                onExpandQueue = { isQueueExpanded = it },
-                                navigateToItem = { item ->
-                                    multiBackStack.add(
-                                        MainNav.ItemDetails(
-                                            itemId = item.itemId,
-                                            mediaType = item.mediaType,
-                                            providerId = item.provider,
-                                        ),
-                                    )
-                                },
-                            )
-                        },
-                    )
+                    // The bar is bottom-anchored, so shrinking towards its top slides it down
+                    // while the content padding follows the animated height.
+                    AnimatedVisibility(
+                        visible = playerExpanded || !rootScreenEditing,
+                        enter = expandVertically(expandFrom = Alignment.Top),
+                        exit = shrinkVertically(shrinkTowards = Alignment.Top),
+                    ) {
+                        FloatingBar(
+                            expanded = playerExpanded,
+                            onExpand = onExpandPlayer,
+                            focusRequester = floatingBarFocusRequester,
+                            upFocusRequester = selectedNavItemFocusRequester,
+                            content = { expanded, contentPadding ->
+                                PlayersPager(
+                                    playerPagerState = playerPagerState,
+                                    state = playersState,
+                                    homeScreenViewModel = homeScreenViewModel,
+                                    actionsViewModel = playerActionsViewModel,
+                                    dspSettingsViewModel = dspSettingsViewModel,
+                                    providerViewModel = providerViewModel,
+                                    queueDjViewModel = queueDjViewModel,
+                                    expanded = expanded,
+                                    onClose = { playerExpanded = false },
+                                    contentPadding = contentPadding,
+                                    toastState = toastState,
+                                    isQueueExpanded = isQueueExpanded,
+                                    onExpandQueue = { isQueueExpanded = it },
+                                    navigateToItem = { item ->
+                                        multiBackStack.add(
+                                            MainNav.ItemDetails(
+                                                itemId = item.itemId,
+                                                mediaType = item.mediaType,
+                                                providerId = item.provider,
+                                            ),
+                                        )
+                                    },
+                                )
+                            },
+                        )
+                    }
                 },
             ) { floatingBarContentPadding ->
                 BackHandler(playerExpanded) {
                     playerExpanded = !playerExpanded
                 }
 
+                val entryProvider = mainNavEntryProvider(
+                    floatingBarContentPadding,
+                    multiBackStack,
+                    homeScreenViewModel,
+                    actionsViewModel,
+                    viewModeViewModel,
+                    providerViewModel,
+                    homeScreenState,
+                    libraryScreenState,
+                    searchScreenState,
+                    goToSettings,
+                )
+                val tabRootKeys = backStacks.map { entryProvider(it.first()).contentKey }
                 ConditionalBackNavDisplay(
                     modifier = Modifier
                         .fillMaxSize()
@@ -402,10 +450,13 @@ fun MainNavigationRoot(
                                 homeScreenState,
                                 libraryScreenState,
                                 searchScreenState,
+                                goToSettings,
                                 floatingBarFocusRequester,
                             ),
                         ),
                     ),
+                    transitionSpec = tabAwareTransitionSpec(tabRootKeys, defaultTransitionSpec()),
+                    popTransitionSpec = tabAwareTransitionSpec(tabRootKeys, defaultPopTransitionSpec()),
                     onBack = {
                         multiBackStack.removeLastOrNull()
                     },
@@ -415,6 +466,26 @@ fun MainNavigationRoot(
         }
         ToastHost(toastState = toastState)
     }
+}
+
+/**
+ * Switches tabs without animation and uses [inTab] inside one tab. A tab switch is not a push or a
+ * pop, and a quick tab tap that interrupts a slide can leave NavDisplay on a half-drawn scene.
+ */
+private fun tabAwareTransitionSpec(
+    tabRootKeys: List<Any>,
+    inTab: AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform,
+): AnimatedContentTransitionScope<Scene<NavKey>>.() -> ContentTransform = {
+    when (initialState.tabIndex(tabRootKeys)) {
+        targetState.tabIndex(tabRootKeys) -> inTab()
+        else -> EnterTransition.None togetherWith ExitTransition.None
+    }
+}
+
+/** The last tab whose root is in this scene's stack, because [MultiBackStack] puts Home first. */
+private fun Scene<NavKey>.tabIndex(tabRootKeys: List<Any>): Int {
+    val stackKeys = (previousEntries + entries).mapTo(HashSet()) { it.contentKey }
+    return tabRootKeys.indexOfLast { it in stackKeys }
 }
 
 @Composable
@@ -428,6 +499,7 @@ private fun mainNavEntryProvider(
     homeScreenState: MutableState<HomeScreenState?>,
     libraryScreenState: MutableState<LibraryScreenState?>,
     searchScreenState: MutableState<SearchScreenState?>,
+    goToSettings: () -> Unit,
     floatingBarFocusRequester: FocusRequester? = null,
 ): (NavKey) -> NavEntry<NavKey> {
     // Hoisted here (outlives the per-NavEntry SearchViewModel) to carry an empty-quick-search
@@ -448,6 +520,7 @@ private fun mainNavEntryProvider(
                         is Playlist,
                         is Podcast,
                         is Audiobook,
+                        is MediaCollection,
                         is Genre,
                             -> {
                             multiBackStack.add(
@@ -465,6 +538,7 @@ private fun mainNavEntryProvider(
                 providerIconFetcher = providerViewModel.providerIconFetcher(),
                 actionsViewModel = actionsViewModel,
                 state = screenState,
+                onOpenSettings = goToSettings,
                 floatingBarFocusRequester = floatingBarFocusRequester,
             )
         }
@@ -524,6 +598,7 @@ private fun mainNavEntryProvider(
                         is Playlist,
                         is Podcast,
                         is Audiobook,
+                        is MediaCollection,
                         is Genre,
                             -> {
                             multiBackStack.add(
@@ -570,6 +645,7 @@ private fun mainNavEntryProvider(
                         is Playlist,
                         is Podcast,
                         is Audiobook,
+                        is MediaCollection,
                         is Genre,
                         -> multiBackStack.add(
                             MainNav.ItemDetails(
@@ -593,6 +669,7 @@ private fun mainNavEntryProvider(
             ItemListScreen(
                 title = it.title,
                 mediaType = it.itemList.mediaType,
+                sortContext = it.itemList.sortContext,
                 itemListViewModel = itemListViewModel,
                 viewModeViewModel = viewModeViewModel,
                 actionsViewModel = actionsViewModel,
@@ -603,6 +680,7 @@ private fun mainNavEntryProvider(
                         is Playlist,
                         is Podcast,
                         is Audiobook,
+                        is MediaCollection,
                         is Genre,
                             -> {
                             multiBackStack.add(
