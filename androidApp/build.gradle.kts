@@ -114,6 +114,8 @@ dependencies {
     implementation(libs.koin.androidx.compose)
     implementation(libs.androidx.media)
     implementation(libs.androidx.car.app)
+    // Android TV Watch Next / continue-row integration (WatchNextManager).
+    implementation(libs.androidx.tvprovider)
     implementation(libs.coil)
     implementation(libs.kermit)
     debugImplementation(libs.compose.ui.tooling)
