@@ -39,7 +39,7 @@ class SelectPlayerDialogFocusTest {
                     modules(module { singleOf(::MdiCodepoints) })
                 }),
                 content = {
-                    SelectPlayerDialog(
+                    SelectPlayerSheet(
                         selectedPlayer = kitchen,
                         players = listOf(kitchen, livingRoom),
                         onMoveToPlayer = { selectedPlayerId = it },
