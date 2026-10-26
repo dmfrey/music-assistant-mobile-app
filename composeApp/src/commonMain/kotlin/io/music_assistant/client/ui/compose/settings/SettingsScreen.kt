@@ -210,10 +210,10 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
     val configLinks = buildConfigLinks(isDirect, hasCrashLog)
 
     val authFlow = rememberTvFocusFlow()
+    var sendspinAdvancedExpanded by remember { mutableStateOf(false) }
     val authLinks: Map<String, TvFocusFlow.Links> = buildAuthLinks(
         sessionState = sessionState,
         isAuthenticated = isAuthenticated,
-        sendspinCustomConnectionEnabled = sendspinDraft.connectionOverride.enabled,
         hasCrashLog = hasCrashLog,
     )
 
@@ -502,6 +502,8 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
                                     isSavable = isSendspinSavable,
                                     isResettable = isSendspinResettable,
                                     isConfirmationPending = isSendspinConfirmationPending,
+                                    showAdvanced = sendspinAdvancedExpanded,
+                                    onToggleAdvanced = { sendspinAdvancedExpanded = !sendspinAdvancedExpanded },
                                     onEnabledChange = sendspinViewModel::setEnabled,
                                     onSettingsChange = sendspinViewModel::update,
                                     onSave = sendspinViewModel::save,
@@ -1476,6 +1478,8 @@ private fun SendspinSection(
     isSavable: Boolean,
     isResettable: Boolean,
     isConfirmationPending: Boolean,
+    showAdvanced: Boolean,
+    onToggleAdvanced: () -> Unit,
     onEnabledChange: (Boolean) -> Unit,
     onSettingsChange: ((SendspinPlayerSettings) -> SendspinPlayerSettings) -> Unit,
     onSave: () -> Unit,
@@ -1492,6 +1496,8 @@ private fun SendspinSection(
             isSavable = isSavable,
             isResettable = isResettable,
             isConfirmationPending = isConfirmationPending,
+            showAdvanced = showAdvanced,
+            onToggleAdvanced = onToggleAdvanced,
             onEnabledChange = onEnabledChange,
             onSettingsChange = onSettingsChange,
             onSave = onSave,
