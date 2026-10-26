@@ -133,6 +133,7 @@ dependencies {
         implementation(libs.errorprone.annotations)
     }
 
+    testImplementation(project(":nav"))
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.androidx.compose.ui.test.junit4)

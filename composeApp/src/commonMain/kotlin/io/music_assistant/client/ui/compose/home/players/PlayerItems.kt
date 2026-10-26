@@ -88,8 +88,8 @@ import io.music_assistant.client.ui.compose.common.items.artistNavigation
 import io.music_assistant.client.ui.compose.common.painters.rememberPlaceholderPainter
 import io.music_assistant.client.ui.compose.common.rememberTvFocusFlow
 import io.music_assistant.client.ui.compose.common.tvFocus
-import io.music_assistant.client.ui.fadingEdges
 import io.music_assistant.client.ui.inactive
+import io.music_assistant.client.ui.utils.fadingEdges
 import io.music_assistant.client.utils.formatDuration
 import io.music_assistant.sendspin.api.PlayerState
 import kotlinx.coroutines.flow.Flow
@@ -123,7 +123,6 @@ fun CompactPlayerItem(
     colors: PlayerColors,
     playerAction: (PlayerData, PlayerAction) -> Unit = { _, _ -> },
     onSelectPlayer: (() -> Unit)? = null,
-    onGroupButton: (() -> Unit)? = null,
     showAdditionalControls: Boolean = false,
     sendSpinState: PlayerState?,
     tvFocusFlow: TvFocusFlow? = null,
@@ -286,7 +285,6 @@ fun CompactPlayerItem(
                     controlTint = colors.controlTint,
                     sendSpinState = sendSpinState,
                     onSelectPlayer = onSelectPlayer,
-                    onGroupButton = onGroupButton ?: {},
                 )
             }
         }

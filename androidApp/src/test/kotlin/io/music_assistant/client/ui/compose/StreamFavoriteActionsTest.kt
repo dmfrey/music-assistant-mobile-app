@@ -230,6 +230,7 @@ class StreamFavoriteActionsTest {
                     queueDjViewModel = getKoin().get(),
                     isQueueExpanded = false,
                     onExpandQueue = {},
+                    onSelectPlayer = {},
                 )
                 ToastHost(toastState)
             }

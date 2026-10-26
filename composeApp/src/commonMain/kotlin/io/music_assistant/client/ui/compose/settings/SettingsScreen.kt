@@ -76,6 +76,7 @@ import io.music_assistant.client.api.ConnectionInfo
 import io.music_assistant.client.api.Defaults
 import io.music_assistant.client.data.model.server.ServerInfo
 import io.music_assistant.client.data.model.server.User
+import io.music_assistant.client.nav.BackHandler
 import io.music_assistant.client.settings.ConnectionHistoryEntry
 import io.music_assistant.client.settings.ConnectionType
 import io.music_assistant.client.settings.SendspinPlayerSettings
@@ -88,7 +89,6 @@ import io.music_assistant.client.ui.compose.common.rememberTvFocusFlow
 import io.music_assistant.client.ui.compose.common.toDisplayString
 import io.music_assistant.client.ui.compose.common.tvFocus
 import io.music_assistant.client.ui.compose.common.tvFocusRing
-import io.music_assistant.client.ui.compose.nav.BackHandler
 import io.music_assistant.client.ui.compose.nav.TopBarLayout
 import io.music_assistant.client.ui.compose.settings.sections.SendspinSettingsSection
 import io.music_assistant.client.ui.theme.ThemeSetting
