@@ -763,6 +763,40 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 putListFilters(providers, genres)
             },
         )
+
+        fun get(
+            itemId: String,
+            providerInstanceIdOrDomain: String,
+        ) = Library.get(APICommands.KIND_TRACKS, itemId, providerInstanceIdOrDomain)
+
+        fun getAlbums(
+            itemId: String,
+            providerInstanceIdOrDomain: String,
+        ) = Library.subItems(
+            APICommands.MUSIC_TRACKS_TRACK_ALBUMS,
+            itemId,
+            providerInstanceIdOrDomain,
+        )
+
+        fun getVersions(
+            itemId: String,
+            providerInstanceIdOrDomain: String,
+        ) = Library.subItems(
+            APICommands.MUSIC_TRACKS_TRACK_VERSIONS,
+            itemId,
+            providerInstanceIdOrDomain,
+        )
+
+        fun getSimilar(
+            itemId: String,
+            providerInstanceIdOrDomain: String,
+            limit: Int = 25,
+        ) = Library.subItems(
+            APICommands.MUSIC_TRACKS_SIMILAR_TRACKS,
+            itemId,
+            providerInstanceIdOrDomain,
+            limit = limit,
+        )
     }
 
     data object Browse {
@@ -836,6 +870,8 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             option: QueueOption,
             endlessMixMode: Boolean,
             startItem: String? = null,
+            shuffle: Boolean = false,
+            startFromBeginning: Boolean = false,
         ) = Request(
             command = APICommands.PLAYER_QUEUES_PLAY_MEDIA,
             args = buildJsonObject {
@@ -844,6 +880,10 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
                 put("radio_mode", JsonPrimitive(endlessMixMode))
                 put("queue_id", JsonPrimitive(queueOrPlayerId))
                 startItem?.let { put("start_item", JsonPrimitive(it)) }
+                // Absent flags keep the default of the server: an omitted `shuffle` follows the
+                // queue setting, and a server before the flag ignores an unknown argument anyway.
+                if (shuffle) put("shuffle", JsonPrimitive(true))
+                if (startFromBeginning) put("start_from_beginning", JsonPrimitive(true))
             },
         )
 
@@ -864,6 +904,18 @@ data class Request @OptIn(ExperimentalUuidApi::class) constructor(
             args = buildJsonObject {
                 put("library_item_id", JsonPrimitive(itemId))
                 put("media_type", JsonPrimitive(mediaType.serverValue))
+            },
+        )
+
+        /** Server 2.11 only: true is a like, false is a dislike, null clears the state. */
+        fun setFavorite(
+            itemUri: String,
+            favorite: Boolean?,
+        ) = Request(
+            command = APICommands.MUSIC_FAVORITES_SET_ITEM,
+            args = buildJsonObject {
+                put("item", JsonPrimitive(itemUri))
+                put("favorite", JsonPrimitive(favorite))
             },
         )
 

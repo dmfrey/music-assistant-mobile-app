@@ -47,13 +47,13 @@ fun buildConfigLinks(isDirect: Boolean, hasCrashLog: Boolean): Map<String, TvFoc
 // separate composables whose controls the geometric search on this hardware also fails to chain
 // (verified: D-pad focus gets stuck on the Codec and Enable rows and can't move up). The chain
 // follows the on-screen order and adapts to whichever controls actually exist right now (the
-// login form vs. the logged-in row; the Sendspin custom-connection fields vs. the plain toggle;
-// the Enable vs. Disable local-player button).
+// login form vs. the logged-in row; the Sendspin custom-connection fields vs. the plain toggle).
+// Local-player fields stay in the chain regardless of [SendspinPlayerSettings] enablement: the
+// draft/save/reset flow (SendspinSettingsViewModel) keeps them editable even while the player runs.
 fun buildAuthLinks(
     sessionState: SessionState,
     isAuthenticated: Boolean,
-    sendspinEnabled: Boolean,
-    sendspinUseCustomConnection: Boolean,
+    sendspinCustomConnectionEnabled: Boolean,
     hasCrashLog: Boolean,
 ): Map<String, TvFocusFlow.Links> = when {
     sessionState is SessionState.Connected && !isAuthenticated -> buildMap {
@@ -72,32 +72,24 @@ fun buildAuthLinks(
         }
     }
 
-    sessionState is SessionState.Connected && sendspinEnabled -> buildMap {
+    sessionState is SessionState.Connected && sendspinCustomConnectionEnabled -> buildMap {
         put("disconnect", TvFocusFlow.Links(down = "logout"))
         put("logout", TvFocusFlow.Links(up = "disconnect", down = "playerToggle"))
-        put("playerToggle", TvFocusFlow.Links(up = "logout", down = "shareLogs"))
-        put("shareLogs", TvFocusFlow.Links(up = "playerToggle"))
-        if (hasCrashLog) {
-            put("shareLogs", TvFocusFlow.Links(up = "playerToggle", down = "crashShare"))
-            put("crashShare", TvFocusFlow.Links(up = "shareLogs", right = "crashDelete"))
-            put("crashDelete", TvFocusFlow.Links(up = "shareLogs", left = "crashShare"))
-        }
-    }
-
-    sessionState is SessionState.Connected && sendspinUseCustomConnection -> buildMap {
-        put("disconnect", TvFocusFlow.Links(down = "logout"))
-        put("logout", TvFocusFlow.Links(up = "disconnect", down = "playerName"))
-        put("playerName", TvFocusFlow.Links(up = "logout", down = "codec"))
-        put("codec", TvFocusFlow.Links(up = "playerName", down = "customToggle"))
-        put("customToggle", TvFocusFlow.Links(up = "codec", down = "customHost"))
+        put("playerToggle", TvFocusFlow.Links(up = "logout", down = "playerName"))
+        put("playerName", TvFocusFlow.Links(up = "playerToggle", down = "codec"))
+        put("codec", TvFocusFlow.Links(up = "playerName", down = "hiRes"))
+        put("hiRes", TvFocusFlow.Links(up = "codec", down = "customToggle"))
+        put("customToggle", TvFocusFlow.Links(up = "hiRes", down = "customHost"))
         put("customHost", TvFocusFlow.Links(up = "customToggle", down = "customPort"))
         put("customPort", TvFocusFlow.Links(up = "customHost", right = "customPath", down = "customTls"))
-        put("customPath", TvFocusFlow.Links(up = "customPort", left = "customPort", down = "customTls"))
-        put("customTls", TvFocusFlow.Links(up = "customPort", down = "playerToggle"))
-        put("playerToggle", TvFocusFlow.Links(up = "customTls", down = "shareLogs"))
-        put("shareLogs", TvFocusFlow.Links(up = "playerToggle"))
+        put("customPath", TvFocusFlow.Links(up = "customHost", left = "customPort", down = "customTls"))
+        put("customTls", TvFocusFlow.Links(up = "customPort", down = "buffer"))
+        put("buffer", TvFocusFlow.Links(up = "customTls", down = "reset"))
+        put("reset", TvFocusFlow.Links(up = "buffer", right = "save", down = "shareLogs"))
+        put("save", TvFocusFlow.Links(up = "buffer", left = "reset", down = "shareLogs"))
+        put("shareLogs", TvFocusFlow.Links(up = "reset"))
         if (hasCrashLog) {
-            put("shareLogs", TvFocusFlow.Links(up = "playerToggle", down = "crashShare"))
+            put("shareLogs", TvFocusFlow.Links(up = "reset", down = "crashShare"))
             put("crashShare", TvFocusFlow.Links(up = "shareLogs", right = "crashDelete"))
             put("crashDelete", TvFocusFlow.Links(up = "shareLogs", left = "crashShare"))
         }
@@ -105,14 +97,18 @@ fun buildAuthLinks(
 
     sessionState is SessionState.Connected -> buildMap {
         put("disconnect", TvFocusFlow.Links(down = "logout"))
-        put("logout", TvFocusFlow.Links(up = "disconnect", down = "playerName"))
-        put("playerName", TvFocusFlow.Links(up = "logout", down = "codec"))
-        put("codec", TvFocusFlow.Links(up = "playerName", down = "customToggle"))
-        put("customToggle", TvFocusFlow.Links(up = "codec", down = "playerToggle"))
-        put("playerToggle", TvFocusFlow.Links(up = "customToggle", down = "shareLogs"))
-        put("shareLogs", TvFocusFlow.Links(up = "playerToggle"))
+        put("logout", TvFocusFlow.Links(up = "disconnect", down = "playerToggle"))
+        put("playerToggle", TvFocusFlow.Links(up = "logout", down = "playerName"))
+        put("playerName", TvFocusFlow.Links(up = "playerToggle", down = "codec"))
+        put("codec", TvFocusFlow.Links(up = "playerName", down = "hiRes"))
+        put("hiRes", TvFocusFlow.Links(up = "codec", down = "customToggle"))
+        put("customToggle", TvFocusFlow.Links(up = "hiRes", down = "buffer"))
+        put("buffer", TvFocusFlow.Links(up = "customToggle", down = "reset"))
+        put("reset", TvFocusFlow.Links(up = "buffer", right = "save", down = "shareLogs"))
+        put("save", TvFocusFlow.Links(up = "buffer", left = "reset", down = "shareLogs"))
+        put("shareLogs", TvFocusFlow.Links(up = "reset"))
         if (hasCrashLog) {
-            put("shareLogs", TvFocusFlow.Links(up = "playerToggle", down = "crashShare"))
+            put("shareLogs", TvFocusFlow.Links(up = "reset", down = "crashShare"))
             put("crashShare", TvFocusFlow.Links(up = "shareLogs", right = "crashDelete"))
             put("crashDelete", TvFocusFlow.Links(up = "shareLogs", left = "crashShare"))
         }

@@ -89,10 +89,11 @@ import io.music_assistant.client.data.model.client.PlayerData
 import io.music_assistant.client.data.model.client.PlayerDataFixtures
 import io.music_assistant.client.data.model.client.PlayerDataFixtures.toQueue
 import io.music_assistant.client.data.model.client.PlayerDataFixtures.toQueueTrack
+import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.chapterSeekSeconds
 import io.music_assistant.client.data.model.client.items.AppMediaItem
 import io.music_assistant.client.data.model.client.items.Track
-import io.music_assistant.client.data.model.client.lyrics
+import io.music_assistant.client.data.play.PlayMode
 import io.music_assistant.client.data.repository.QueueOverlayRepository
 import io.music_assistant.client.ui.alphaOn
 import io.music_assistant.client.ui.compose.common.CenteredThreeSlotRow
@@ -352,6 +353,17 @@ fun PlayersPager(
                         dialogRequest = PlayerDialogRequest.AddToPlaylist(playerId, it)
                     }
                 }
+                // Targets this page's queue, not the selected player: the pager shows every player.
+                val queueOrPlayerId = player.queueOrPlayerId
+                val onStartEndlessMix: (AppMediaItem) -> Unit = remember(queueOrPlayerId) {
+                    {
+                        homeScreenViewModel.playOnQueue(
+                            queueOrPlayerId,
+                            it,
+                            PlayMode(QueueOption.REPLACE, endlessMix = true),
+                        )
+                    }
+                }
 
                 val colors by playerColors.getValue(player)
 
@@ -420,7 +432,8 @@ fun PlayersPager(
                                 },
                                 playerAction = playerAction1,
                                 onAddToPlaylist = onAddToPlaylist.takeIf { grantedScopes.canEditLibrary },
-                                onFavoriteClick = actionsViewModel::onFavoriteClick
+                                onStartEndlessMix = onStartEndlessMix,
+                                onFavoriteChange = actionsViewModel::onFavoriteChange
                                     .takeIf { grantedScopes.canEditLibrary },
                                 onFavoriteStreamClick = {
                                     actionsViewModel.onFavoriteStreamClick(it)
@@ -522,8 +535,9 @@ private fun ExpandedPlayerPage(
     onAmbientSoundButton: (() -> Unit)?,
     playerAction: (PlayerData, PlayerAction) -> Unit,
     onAddToPlaylist: ((AppMediaItem) -> Unit)? = null,
+    onStartEndlessMix: ((AppMediaItem) -> Unit)? = null,
     // Null hides the heart: the user cannot edit the library.
-    onFavoriteClick: ((AppMediaItem) -> Unit)?,
+    onFavoriteChange: ((AppMediaItem, Boolean?) -> Unit)?,
     onFavoriteStreamClick: (PlayerData) -> Unit = {},
     canFavoriteStream: Boolean = false,
     onClose: () -> Unit,
@@ -809,7 +823,7 @@ private fun ExpandedPlayerPage(
                             item = player,
                             colors = colors,
                             playerAction = playerAction,
-                            onFavoriteClick = onFavoriteClick,
+                            onFavoriteChange = onFavoriteChange,
                             onFavoriteStreamClick = onFavoriteStreamClick,
                             canFavoriteStream = canFavoriteStream,
                             lyricsAvailable = lyricsAvailable,
@@ -962,6 +976,7 @@ private fun ExpandedPlayerPage(
                 if (!showSideQueue) {
                     CollapsibleQueue(
                         onAddToPlaylist = onAddToPlaylist,
+                        onStartEndlessMix = onStartEndlessMix,
                         modifier = Modifier
                             .conditional(
                                 condition = isQueueExpanded,
@@ -1299,7 +1314,7 @@ fun ExpandedPlayerPagePreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),
@@ -1338,7 +1353,7 @@ fun ExpandedPlayerPageMediumScreenPreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),
@@ -1377,7 +1392,7 @@ fun ExpandedPlayerPageExpandedScreenPreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),
@@ -1420,7 +1435,7 @@ fun ExpandedPlayerPageExpandedScreenPlusPreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),
@@ -1460,7 +1475,7 @@ fun ExpandedPlayerPagePhoneLandscapePreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),
@@ -1499,7 +1514,7 @@ fun ExpandedPlayerPageLargeScreenPreview() {
             onAnnounceButton = null,
             onAmbientSoundButton = null,
             playerAction = { _, _ -> },
-            onFavoriteClick = {},
+            onFavoriteChange = null,
             onClose = {},
             queueAction = {},
             allPlayers = listOf(playerData),

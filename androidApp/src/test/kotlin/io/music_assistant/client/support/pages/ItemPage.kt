@@ -6,6 +6,7 @@ import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.hasTextExactly
+import androidx.compose.ui.test.isDisplayed
 import androidx.compose.ui.test.isPopup
 import androidx.compose.ui.test.junit4.ComposeTestRule
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -25,6 +26,7 @@ import musicassistantclient.composeapp.generated.resources.cd_more
 import musicassistantclient.composeapp.generated.resources.cd_provider_filter
 import musicassistantclient.composeapp.generated.resources.cd_view_all
 import musicassistantclient.composeapp.generated.resources.find_in_list_label
+import musicassistantclient.composeapp.generated.resources.item_tab_versions
 import musicassistantclient.composeapp.generated.resources.media_type_albums
 import musicassistantclient.composeapp.generated.resources.media_type_tracks
 import musicassistantclient.composeapp.generated.resources.nav_home
@@ -66,17 +68,18 @@ class ItemPage(
         when (type) {
             MediaType.ARTIST -> Unit
             MediaType.ALBUM -> {
-                composeTestRule.onNode(isTab(Res.string.media_type_tracks.get()))
-                    .assertIsDisplayed()
+                waitForTab(Res.string.media_type_tracks.get())
                 composeTestRule.onNode(isTab(Res.string.media_type_albums.get()))
                     .assertIsNotDisplayed()
             }
 
-            MediaType.TRACK -> TODO()
-            MediaType.PLAYLIST -> {
-                composeTestRule.onNode(isTab(Res.string.media_type_tracks.get()))
+            MediaType.TRACK -> {
+                waitForTab(Res.string.media_type_albums.get())
+                composeTestRule.onNode(isTab(Res.string.item_tab_versions.get()))
                     .assertIsDisplayed()
             }
+
+            MediaType.PLAYLIST -> waitForTab(Res.string.media_type_tracks.get())
 
             MediaType.RADIO -> TODO()
             MediaType.AUDIOBOOK -> TODO()
@@ -90,6 +93,16 @@ class ItemPage(
             MediaType.SOUND_EFFECT -> TODO()
             MediaType.AUDIO_SOURCE -> TODO()
             MediaType.UNKNOWN -> TODO()
+        }
+    }
+
+    /**
+     * The tabs bar stays hidden while the sub-lists load. That load runs on Dispatchers.Default,
+     * which Compose idling does not track, so the bar can appear after the rule reports idle.
+     */
+    private fun waitForTab(label: String) {
+        composeTestRule.waitUntil("tab '$label' is displayed") {
+            composeTestRule.onNode(isTab(label)).isDisplayed()
         }
     }
 

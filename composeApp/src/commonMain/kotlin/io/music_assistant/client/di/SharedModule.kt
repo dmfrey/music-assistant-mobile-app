@@ -63,6 +63,7 @@ import io.music_assistant.client.ui.compose.search.SearchViewModel
 import io.music_assistant.client.ui.compose.settings.CarActionsViewModel
 import io.music_assistant.client.ui.compose.settings.CarDspViewModel
 import io.music_assistant.client.ui.compose.settings.DefaultClickActionsViewModel
+import io.music_assistant.client.ui.compose.settings.SendspinSettingsViewModel
 import io.music_assistant.client.ui.compose.settings.SettingsViewModel
 import io.music_assistant.client.ui.theme.ThemeViewModel
 import io.music_assistant.client.utils.LocalNetworkPermissionGate
@@ -180,7 +181,7 @@ fun sharedModule(
                 scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             )
         }
-        singleOf(::ServiceClientMediaItemRepository) { bind<MediaItemRepository>() }
+        single<MediaItemRepository> { ServiceClientMediaItemRepository(get(), get()) }
         singleOf(::LibrarySortRepository)   // Library sort choices; caches the 2.11 sort_options
         singleOf(::MainDataSource)          // Singleton - held by foreground service
         single(createdAtStart = true) {     // Eager - must observe car edges from launch
@@ -193,6 +194,13 @@ fun sharedModule(
         factory { SchemaVersionWarningViewModel(get()) }
         factory { ActionsViewModel(get(), get(), get(), get()) }
         factory { SettingsViewModel(get(), get(), get(), get(), get()) }
+        factory {
+            val mainDataSource = get<MainDataSource>()
+            SendspinSettingsViewModel(
+                settings = get(),
+                isLocalPlayerPlaying = { mainDataSource.localPlayer.value?.player?.isPlaying == true },
+            )
+        }
         factory { DefaultClickActionsViewModel(get()) }
         factory { CarActionsViewModel(get(), get()) }
         factory { CarDspViewModel(get(), get()) }
@@ -208,6 +216,7 @@ fun sharedModule(
         factory { params -> BrowseViewModel(params.getOrNull<String>(), get(), get(), get()) }
         factory { params ->
             ItemDetailsViewModel(
+                get(),
                 get(),
                 get(),
                 get(),

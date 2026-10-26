@@ -29,7 +29,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.BasicAlertDialog
 import androidx.compose.material3.Button
@@ -43,7 +42,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.PrimaryTabRow
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -80,21 +78,19 @@ import io.music_assistant.client.data.model.server.ServerInfo
 import io.music_assistant.client.data.model.server.User
 import io.music_assistant.client.settings.ConnectionHistoryEntry
 import io.music_assistant.client.settings.ConnectionType
-import io.music_assistant.client.settings.SettingsRepository
+import io.music_assistant.client.settings.SendspinPlayerSettings
 import io.music_assistant.client.ui.compose.auth.AuthenticationPanel
 import io.music_assistant.client.ui.compose.common.DisplayString
-import io.music_assistant.client.ui.compose.common.OverflowMenuButton
-import io.music_assistant.client.ui.compose.common.OverflowMenuOption
 import io.music_assistant.client.ui.compose.common.TvFocusFlow
 import io.music_assistant.client.ui.compose.common.UnsupportedInstallCard
 import io.music_assistant.client.ui.compose.common.clearFocusOnScroll
-import io.music_assistant.client.ui.compose.common.localizedTitle
 import io.music_assistant.client.ui.compose.common.rememberTvFocusFlow
 import io.music_assistant.client.ui.compose.common.toDisplayString
 import io.music_assistant.client.ui.compose.common.tvFocus
 import io.music_assistant.client.ui.compose.common.tvFocusRing
 import io.music_assistant.client.ui.compose.nav.BackHandler
 import io.music_assistant.client.ui.compose.nav.TopBarLayout
+import io.music_assistant.client.ui.compose.settings.sections.SendspinSettingsSection
 import io.music_assistant.client.ui.theme.ThemeSetting
 import io.music_assistant.client.ui.theme.ThemeViewModel
 import io.music_assistant.client.utils.AppVersion
@@ -113,7 +109,6 @@ import musicassistantclient.composeapp.generated.resources.auth_title
 import musicassistantclient.composeapp.generated.resources.cd_connection_history
 import musicassistantclient.composeapp.generated.resources.cd_delete_crash_logs
 import musicassistantclient.composeapp.generated.resources.cd_scan_qr_code
-import musicassistantclient.composeapp.generated.resources.cd_select_codec
 import musicassistantclient.composeapp.generated.resources.common_back
 import musicassistantclient.composeapp.generated.resources.common_cancel
 import musicassistantclient.composeapp.generated.resources.common_delete
@@ -131,8 +126,6 @@ import musicassistantclient.composeapp.generated.resources.settings_allow_landsc
 import musicassistantclient.composeapp.generated.resources.settings_allow_landscape_hint
 import musicassistantclient.composeapp.generated.resources.settings_app_documentation
 import musicassistantclient.composeapp.generated.resources.settings_app_version_info
-import musicassistantclient.composeapp.generated.resources.settings_buffer_size
-import musicassistantclient.composeapp.generated.resources.settings_codec_preference
 import musicassistantclient.composeapp.generated.resources.settings_connect
 import musicassistantclient.composeapp.generated.resources.settings_connect_saved
 import musicassistantclient.composeapp.generated.resources.settings_connect_webrtc
@@ -145,22 +138,13 @@ import musicassistantclient.composeapp.generated.resources.settings_connection_d
 import musicassistantclient.composeapp.generated.resources.settings_connection_experimental
 import musicassistantclient.composeapp.generated.resources.settings_connection_method
 import musicassistantclient.composeapp.generated.resources.settings_connection_webrtc
-import musicassistantclient.composeapp.generated.resources.settings_custom_sendspin
-import musicassistantclient.composeapp.generated.resources.settings_disable_local_player
 import musicassistantclient.composeapp.generated.resources.settings_disconnect
-import musicassistantclient.composeapp.generated.resources.settings_enable_local_player
 import musicassistantclient.composeapp.generated.resources.settings_exit_app
 import musicassistantclient.composeapp.generated.resources.settings_history_direct
 import musicassistantclient.composeapp.generated.resources.settings_history_webrtc
-import musicassistantclient.composeapp.generated.resources.settings_host
-import musicassistantclient.composeapp.generated.resources.settings_local_player_disabled
-import musicassistantclient.composeapp.generated.resources.settings_local_player_enabled
 import musicassistantclient.composeapp.generated.resources.settings_misc
 import musicassistantclient.composeapp.generated.resources.settings_no_saved_connections
-import musicassistantclient.composeapp.generated.resources.settings_path
-import musicassistantclient.composeapp.generated.resources.settings_player_name
 import musicassistantclient.composeapp.generated.resources.settings_port
-import musicassistantclient.composeapp.generated.resources.settings_port_default
 import musicassistantclient.composeapp.generated.resources.settings_remote_id
 import musicassistantclient.composeapp.generated.resources.settings_remote_id_hint
 import musicassistantclient.composeapp.generated.resources.settings_remote_id_invalid
@@ -173,7 +157,6 @@ import musicassistantclient.composeapp.generated.resources.settings_server_host
 import musicassistantclient.composeapp.generated.resources.settings_share_crash_logs
 import musicassistantclient.composeapp.generated.resources.settings_share_logs
 import musicassistantclient.composeapp.generated.resources.settings_use_tls
-import musicassistantclient.composeapp.generated.resources.settings_use_tls_wss
 import musicassistantclient.composeapp.generated.resources.settings_version_info
 import musicassistantclient.composeapp.generated.resources.settings_webrtc_description
 import musicassistantclient.composeapp.generated.resources.settings_webrtc_disclaimer
@@ -183,7 +166,6 @@ import org.koin.compose.viewmodel.koinViewModel
 import org.publicvalue.multiplatform.qrcode.CameraPosition
 import org.publicvalue.multiplatform.qrcode.CodeType
 import org.publicvalue.multiplatform.qrcode.ScannerWithPermissions
-import kotlin.math.roundToInt
 
 // Android TV: initial-focus landing for the config form. The target sits behind a tab switch and
 // needs a frame to attach its FocusRequester; additionally, the app's cold start on Google TV races
@@ -204,8 +186,12 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
     val connectionHistory by viewModel.connectionHistory.collectAsStateWithLifecycle()
     val dataConnection = (sessionState as? SessionState.Connected)?.dataConnectionState
     val isAuthenticated = dataConnection is DataConnectionState.Authenticated
-    val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
-    val sendspinUseCustomConnection by viewModel.sendspinUseCustomConnection.collectAsStateWithLifecycle()
+    val sendspinViewModel = koinViewModel<SendspinSettingsViewModel>()
+    val sendspinEnabled by sendspinViewModel.enabled.collectAsStateWithLifecycle()
+    val sendspinDraft by sendspinViewModel.draft.collectAsStateWithLifecycle()
+    val isSendspinSavable by sendspinViewModel.isSavable.collectAsStateWithLifecycle()
+    val isSendspinResettable by sendspinViewModel.isResettable.collectAsStateWithLifecycle()
+    val isSendspinConfirmationPending by sendspinViewModel.isConfirmationPending.collectAsStateWithLifecycle()
     val hasCrashLog by viewModel.hasCrashLog.collectAsStateWithLifecycle()
     val isPreparingShare by viewModel.isPreparingShare.collectAsStateWithLifecycle()
     val preferredMethod by viewModel.preferredConnectionMethod.collectAsStateWithLifecycle()
@@ -227,8 +213,7 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
     val authLinks: Map<String, TvFocusFlow.Links> = buildAuthLinks(
         sessionState = sessionState,
         isAuthenticated = isAuthenticated,
-        sendspinEnabled = sendspinEnabled,
-        sendspinUseCustomConnection = sendspinUseCustomConnection,
+        sendspinCustomConnectionEnabled = sendspinDraft.connectionOverride.enabled,
         hasCrashLog = hasCrashLog,
     )
 
@@ -510,9 +495,19 @@ fun SettingsScreen(goHome: () -> Unit, exitApp: () -> Unit) {
 
                                 // Local Player Section
                                 SendspinSection(
-                                    viewModel = viewModel,
                                     authFlow = if (isTv) authFlow else null,
                                     authLinks = authLinks,
+                                    enabled = sendspinEnabled,
+                                    settings = sendspinDraft,
+                                    isSavable = isSendspinSavable,
+                                    isResettable = isSendspinResettable,
+                                    isConfirmationPending = isSendspinConfirmationPending,
+                                    onEnabledChange = sendspinViewModel::setEnabled,
+                                    onSettingsChange = sendspinViewModel::update,
+                                    onSave = sendspinViewModel::save,
+                                    onReset = sendspinViewModel::reset,
+                                    onConfirm = sendspinViewModel::confirm,
+                                    onDismiss = sendspinViewModel::dismiss,
                                 )
 
                                 // Car options route to the local player — only meaningful when
@@ -1471,289 +1466,53 @@ private fun LoginSection(
     }
 }
 
+/** Dispatches to the TV row-based layout or the phone's [SendspinSettingsSection]. */
 @Composable
 private fun SendspinSection(
-    modifier: Modifier = Modifier,
-    viewModel: SettingsViewModel,
-    authFlow: TvFocusFlow? = null,
-    authLinks: Map<String, TvFocusFlow.Links> = emptyMap(),
+    authFlow: TvFocusFlow?,
+    authLinks: Map<String, TvFocusFlow.Links>,
+    enabled: Boolean,
+    settings: SendspinPlayerSettings,
+    isSavable: Boolean,
+    isResettable: Boolean,
+    isConfirmationPending: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onSettingsChange: ((SendspinPlayerSettings) -> SendspinPlayerSettings) -> Unit,
+    onSave: () -> Unit,
+    onReset: () -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    val sendspinEnabled by viewModel.sendspinEnabled.collectAsStateWithLifecycle()
-    val focusManager = LocalFocusManager.current
-    val sendspinDeviceName by viewModel.sendspinDeviceName.collectAsStateWithLifecycle()
-    val sendspinUseCustomConnection by viewModel.sendspinUseCustomConnection.collectAsStateWithLifecycle()
-    val sendspinPort by viewModel.sendspinPort.collectAsStateWithLifecycle()
-    val sendspinPath by viewModel.sendspinPath.collectAsStateWithLifecycle()
-    val sendspinCodecPreference by viewModel.sendspinCodecPreference.collectAsStateWithLifecycle()
-
-    SectionCard(modifier = modifier) {
-        SectionTitle(
-            if (sendspinEnabled) {
-                stringResource(
-                    Res.string.settings_local_player_enabled,
-                )
-            } else {
-                stringResource(Res.string.settings_local_player_disabled)
-            },
+    if (authFlow != null) {
+        SendspinSectionTv(
+            authFlow = authFlow,
+            authLinks = authLinks,
+            enabled = enabled,
+            settings = settings,
+            isSavable = isSavable,
+            isResettable = isResettable,
+            isConfirmationPending = isConfirmationPending,
+            onEnabledChange = onEnabledChange,
+            onSettingsChange = onSettingsChange,
+            onSave = onSave,
+            onReset = onReset,
+            onConfirm = onConfirm,
+            onDismiss = onDismiss,
         )
-
-        if (isTelevisionDevice() && authFlow != null) {
-            SendspinSectionTv(
-                viewModel = viewModel,
-                authFlow = authFlow,
-                authLinks = authLinks,
-                sendspinEnabled = sendspinEnabled,
-                sendspinDeviceName = sendspinDeviceName,
-                sendspinUseCustomConnection = sendspinUseCustomConnection,
-                sendspinPort = sendspinPort,
-                sendspinPath = sendspinPath,
-                sendspinCodecPreference = sendspinCodecPreference,
-            )
-        } else {
-            // Text fields on top - disabled when player is running
-            TextField(
-                modifier = Modifier
-                    .tvFocus(authFlow, authLinks, "playerName")
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                value = sendspinDeviceName,
-                onValueChange = { viewModel.setSendspinDeviceName(it) },
-                label = { Text(stringResource(Res.string.settings_player_name)) },
-                singleLine = true,
-                enabled = !sendspinEnabled,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                colors = TextFieldDefaults.colors(
-                    focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                    unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                    disabledTextColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                ),
-            )
-
-            // Codec selection
-            OverflowMenuButton(
-                options = SettingsRepository.CODECS.map { item ->
-                    OverflowMenuOption(
-                        title = item.localizedTitle(),
-                    ) { viewModel.setSendspinCodecPreference(item) }
-                },
-                buttonContent = { onClick ->
-                    Row(
-                        modifier = Modifier
-                            .tvFocus(authFlow, authLinks, "codec")
-                            .fillMaxWidth()
-                            .clickable(enabled = !sendspinEnabled) { onClick() }
-                            .padding(bottom = 16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(Res.string.settings_codec_preference),
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                            Text(
-                                text = sendspinCodecPreference.localizedTitle(),
-                                style = MaterialTheme.typography.bodyLarge,
-                                color = if (sendspinEnabled) {
-                                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                                } else {
-                                    MaterialTheme.colorScheme.onBackground
-                                },
-                            )
-                        }
-                        Icon(
-                            modifier = Modifier.size(24.dp),
-                            imageVector = Icons.Default.ExpandMore,
-                            contentDescription = stringResource(Res.string.cd_select_codec),
-                            tint = if (sendspinEnabled) {
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                            } else {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            },
-                        )
-                    }
-                },
-            )
-
-            // Buffer size (advertised buffer_capacity in MB). Connect-time config, so locked while
-            // the local player is running — takes effect on the next connect.
-            val sendspinBufferCapacityMb by viewModel.sendspinBufferCapacityMb.collectAsStateWithLifecycle()
-            Column(modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = stringResource(Res.string.settings_buffer_size),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Text(
-                        text = "$sendspinBufferCapacityMb MB",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = if (sendspinEnabled) {
-                            MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                        } else {
-                            MaterialTheme.colorScheme.onBackground
-                        },
-                    )
-                }
-                Slider(
-                    value = sendspinBufferCapacityMb.toFloat(),
-                    onValueChange = { viewModel.setSendspinBufferCapacityMb(it.roundToInt()) },
-                    valueRange = SettingsRepository.BUFFER_MB_MIN.toFloat()..SettingsRepository.BUFFER_MB_MAX.toFloat(),
-                    steps = (SettingsRepository.BUFFER_MB_MAX - SettingsRepository.BUFFER_MB_MIN) /
-                            SettingsRepository.BUFFER_MB_STEP - 1,
-                    enabled = !sendspinEnabled,
-                )
-            }
-
-            // Custom connection toggle
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Checkbox(
-                    checked = sendspinUseCustomConnection,
-                    onCheckedChange = { viewModel.setSendspinUseCustomConnection(it) },
-                    enabled = !sendspinEnabled,
-                    modifier = Modifier.tvFocus(authFlow, authLinks, "customToggle"),
-                )
-                Text(
-                    text = stringResource(Res.string.settings_custom_sendspin),
-                    color = if (sendspinEnabled) {
-                        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.onBackground
-                    },
-                )
-            }
-
-            // Connection fields (only shown when using custom connection)
-            if (sendspinUseCustomConnection) {
-                val sendspinHost by viewModel.sendspinHost.collectAsStateWithLifecycle()
-                val sendspinUseTls by viewModel.sendspinUseTls.collectAsStateWithLifecycle()
-
-                TextField(
-                    modifier = Modifier
-                        .tvFocus(authFlow, authLinks, "customHost")
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp),
-                    value = sendspinHost,
-                    onValueChange = { viewModel.setSendspinHost(it) },
-                    label = { Text(stringResource(Res.string.settings_host)) },
-                    singleLine = true,
-                    enabled = !sendspinEnabled,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    keyboardActions = KeyboardActions(
-                        onNext = { focusManager.moveFocus(FocusDirection.Down) },
-                    ),
-                    colors = TextFieldDefaults.colors(
-                        focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                        unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                        disabledTextColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                    ),
-                )
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    TextField(
-                        modifier = Modifier
-                            .tvFocus(authFlow, authLinks, "customPort")
-                            .weight(1f)
-                            .padding(bottom = 12.dp),
-                        value = sendspinPort.toString(),
-                        onValueChange = {
-                            it.toIntOrNull()?.let { port -> viewModel.setSendspinPort(port) }
-                        },
-                        label = { Text(stringResource(Res.string.settings_port_default)) },
-                        singleLine = true,
-                        enabled = !sendspinEnabled,
-                        keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.Number,
-                            imeAction = ImeAction.Next,
-                        ),
-                        keyboardActions = KeyboardActions(
-                            onNext = { focusManager.moveFocus(FocusDirection.Next) },
-                        ),
-                        colors = TextFieldDefaults.colors(
-                            focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            disabledTextColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        ),
-                    )
-
-                    TextField(
-                        modifier = Modifier
-                            .tvFocus(authFlow, authLinks, "customPath")
-                            .weight(1f)
-                            .padding(bottom = 12.dp),
-                        value = sendspinPath,
-                        onValueChange = { viewModel.setSendspinPath(it) },
-                        label = { Text(stringResource(Res.string.settings_path)) },
-                        singleLine = true,
-                        enabled = !sendspinEnabled,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(onDone = { focusManager.clearFocus() }),
-                        colors = TextFieldDefaults.colors(
-                            focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                            disabledTextColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
-                        ),
-                    )
-                }
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(
-                        checked = sendspinUseTls,
-                        onCheckedChange = { viewModel.setSendspinUseTls(it) },
-                        enabled = !sendspinEnabled,
-                        modifier = Modifier.tvFocus(authFlow, authLinks, "customTls"),
-                    )
-                    Text(
-                        text = stringResource(Res.string.settings_use_tls_wss),
-                        color = if (sendspinEnabled) {
-                            MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                        } else {
-                            MaterialTheme.colorScheme.onBackground
-                        },
-                    )
-                }
-            }
-
-            // Toggle button on the bottom
-            if (sendspinEnabled) {
-                OutlinedButton(
-                    modifier = Modifier
-                        .tvFocus(authFlow, authLinks, "playerToggle")
-                        .fillMaxWidth(),
-                    onClick = { viewModel.setSendspinEnabled(false) },
-                ) {
-                    Text(stringResource(Res.string.settings_disable_local_player))
-                }
-            } else {
-                Button(
-                    modifier = Modifier
-                        .tvFocus(authFlow, authLinks, "playerToggle")
-                        .fillMaxWidth(),
-                    onClick = { viewModel.setSendspinEnabled(true) },
-                ) {
-                    Text(stringResource(Res.string.settings_enable_local_player))
-                }
-            }
-        }
+    } else {
+        SendspinSettingsSection(
+            enabled = enabled,
+            settings = settings,
+            isSavable = isSavable,
+            isResettable = isResettable,
+            isConfirmationPending = isConfirmationPending,
+            onEnabledChange = onEnabledChange,
+            onSettingsChange = onSettingsChange,
+            onSave = onSave,
+            onReset = onReset,
+            onConfirm = onConfirm,
+            onDismiss = onDismiss,
+        )
     }
 }
 

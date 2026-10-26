@@ -13,10 +13,12 @@ import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,24 +31,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.music_assistant.client.settings.SendspinPlayerSettings
 import io.music_assistant.client.settings.SettingsRepository
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
 import io.music_assistant.client.ui.compose.common.OverflowMenuOption
 import io.music_assistant.client.ui.compose.common.TvFocusFlow
 import io.music_assistant.client.ui.compose.common.TvPreferenceRow
 import io.music_assistant.client.ui.compose.common.TvTextEditorDialog
-import io.music_assistant.client.ui.compose.common.localizedTitle
+import io.music_assistant.client.ui.compose.common.displayName
 import io.music_assistant.client.ui.compose.common.tvFocus
+import io.music_assistant.client.ui.compose.settings.sections.InterruptPlaybackDialog
 import io.music_assistant.client.utils.SessionState
 import io.music_assistant.client.utils.hasCamera
 import io.music_assistant.client.webrtc.model.RemoteId
-import io.music_assistant.sendspin.api.AudioCodec
 import kotlinx.coroutines.delay
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.cd_connection_history
 import musicassistantclient.composeapp.generated.resources.cd_scan_qr_code
 import musicassistantclient.composeapp.generated.resources.cd_select_codec
+import musicassistantclient.composeapp.generated.resources.settings_buffer_seconds_value
+import musicassistantclient.composeapp.generated.resources.settings_buffer_size
 import musicassistantclient.composeapp.generated.resources.settings_codec_preference
 import musicassistantclient.composeapp.generated.resources.settings_connect
 import musicassistantclient.composeapp.generated.resources.settings_connect_saved
@@ -54,14 +58,17 @@ import musicassistantclient.composeapp.generated.resources.settings_connect_webr
 import musicassistantclient.composeapp.generated.resources.settings_connected
 import musicassistantclient.composeapp.generated.resources.settings_connecting
 import musicassistantclient.composeapp.generated.resources.settings_custom_sendspin
-import musicassistantclient.composeapp.generated.resources.settings_disable_local_player
-import musicassistantclient.composeapp.generated.resources.settings_enable_local_player
+import musicassistantclient.composeapp.generated.resources.settings_hi_res_audio
 import musicassistantclient.composeapp.generated.resources.settings_host
+import musicassistantclient.composeapp.generated.resources.settings_local_player_disabled
+import musicassistantclient.composeapp.generated.resources.settings_local_player_enabled
 import musicassistantclient.composeapp.generated.resources.settings_path
 import musicassistantclient.composeapp.generated.resources.settings_player_name
 import musicassistantclient.composeapp.generated.resources.settings_port
 import musicassistantclient.composeapp.generated.resources.settings_remote_id
 import musicassistantclient.composeapp.generated.resources.settings_remote_id_invalid
+import musicassistantclient.composeapp.generated.resources.settings_sendspin_reset_defaults
+import musicassistantclient.composeapp.generated.resources.settings_sendspin_save_changes
 import musicassistantclient.composeapp.generated.resources.settings_server_host
 import musicassistantclient.composeapp.generated.resources.settings_use_tls
 import musicassistantclient.composeapp.generated.resources.settings_use_tls_wss
@@ -338,22 +345,34 @@ internal fun WebRTCConnectionContentTv(
 /**
  * Android TV version of the local-player card: rows instead of inline text fields. Each text value
  * opens [TvTextEditorDialog] on select, so the card stays short enough to fit a 1080p screen even
- * with the custom-connection fields enabled (inline fields overflowed, and TV can't scroll).
+ * with the custom-connection fields enabled (inline fields overflowed, and TV can't scroll). Buffer
+ * size is a row + dialog too, not the phone's [Slider], for the same reason the config form edits
+ * host/port that way: a D-pad-focused Material3 Slider gives no visible focus affordance here.
+ *
+ * Settings only take effect on [onSave] (mirrors the phone's draft/save/reset flow;
+ * [SendspinSettingsSection][io.music_assistant.client.ui.compose.settings.sections.SendspinSettingsSection]),
+ * so every field stays editable regardless of [enabled] -- unlike the old immediate-apply design,
+ * there's nothing to disable while the player runs.
  */
 @Composable
 internal fun SendspinSectionTv(
-    viewModel: SettingsViewModel,
     authFlow: TvFocusFlow,
     authLinks: Map<String, TvFocusFlow.Links>,
-    sendspinEnabled: Boolean,
-    sendspinDeviceName: String,
-    sendspinUseCustomConnection: Boolean,
-    sendspinPort: Int,
-    sendspinPath: String,
-    sendspinCodecPreference: AudioCodec,
+    enabled: Boolean,
+    settings: SendspinPlayerSettings,
+    isSavable: Boolean,
+    isResettable: Boolean,
+    isConfirmationPending: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    onSettingsChange: ((SendspinPlayerSettings) -> SendspinPlayerSettings) -> Unit,
+    onSave: () -> Unit,
+    onReset: () -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
 ) {
-    val sendspinHost by viewModel.sendspinHost.collectAsStateWithLifecycle()
-    val sendspinUseTls by viewModel.sendspinUseTls.collectAsStateWithLifecycle()
+    if (isConfirmationPending) {
+        InterruptPlaybackDialog(onConfirm = onConfirm, onDismiss = onDismiss)
+    }
 
     var editing by remember { mutableStateOf<String?>(null) }
     var returnTo by remember { mutableStateOf("playerName") }
@@ -362,31 +381,54 @@ internal fun SendspinSectionTv(
         val editor = when (editing) {
             "playerName" -> TvEditorSpec(
                 title = stringResource(Res.string.settings_player_name),
-                initialValue = sendspinDeviceName,
+                initialValue = settings.name,
                 keyboardType = KeyboardType.Text,
                 validate = { true },
-                onSave = { viewModel.setSendspinDeviceName(it) },
+                onSave = { name -> onSettingsChange { it.copy(name = name) } },
             )
             "customHost" -> TvEditorSpec(
                 title = stringResource(Res.string.settings_host),
-                initialValue = sendspinHost,
+                initialValue = settings.connectionOverride.host,
                 keyboardType = KeyboardType.Text,
                 validate = { true },
-                onSave = { viewModel.setSendspinHost(it) },
+                onSave = { host ->
+                    onSettingsChange { it.copy(connectionOverride = it.connectionOverride.copy(host = host)) }
+                },
             )
             "customPort" -> TvEditorSpec(
                 title = stringResource(Res.string.settings_port),
-                initialValue = sendspinPort.toString(),
+                initialValue = settings.connectionOverride.port.toString(),
                 keyboardType = KeyboardType.Number,
                 validate = { it.toIntOrNull() != null },
-                onSave = { it.toIntOrNull()?.let { port -> viewModel.setSendspinPort(port) } },
+                onSave = { text ->
+                    text.toIntOrNull()?.let { port ->
+                        onSettingsChange { it.copy(connectionOverride = it.connectionOverride.copy(port = port)) }
+                    }
+                },
             )
             "customPath" -> TvEditorSpec(
                 title = stringResource(Res.string.settings_path),
-                initialValue = sendspinPath,
+                initialValue = settings.connectionOverride.path,
                 keyboardType = KeyboardType.Text,
                 validate = { true },
-                onSave = { viewModel.setSendspinPath(it) },
+                onSave = { path ->
+                    onSettingsChange { it.copy(connectionOverride = it.connectionOverride.copy(path = path)) }
+                },
+            )
+            "buffer" -> TvEditorSpec(
+                title = stringResource(Res.string.settings_buffer_size),
+                initialValue = settings.bufferSeconds.toString(),
+                keyboardType = KeyboardType.Number,
+                validate = {
+                    val value = it.toIntOrNull()
+                    value != null &&
+                        value in SettingsRepository.BUFFER_SECONDS_MIN..SettingsRepository.BUFFER_SECONDS_MAX
+                },
+                onSave = { text ->
+                    text.toIntOrNull()?.let { seconds ->
+                        onSettingsChange { it.copy(bufferSeconds = seconds) }
+                    }
+                },
             )
             else -> null
         }
@@ -418,10 +460,30 @@ internal fun SendspinSectionTv(
         }
     }
 
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(
+                if (enabled) Res.string.settings_local_player_enabled else Res.string.settings_local_player_disabled,
+            ),
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Switch(
+            checked = enabled,
+            onCheckedChange = onEnabledChange,
+            modifier = Modifier.tvFocus(authFlow, authLinks, "playerToggle"),
+        )
+    }
+
     TvPreferenceRow(
         label = stringResource(Res.string.settings_player_name),
-        value = sendspinDeviceName,
-        onClick = if (sendspinEnabled) null else ({ editing = "playerName" }),
+        value = settings.name,
+        onClick = { editing = "playerName" },
         focusModifier = Modifier.tvFocus(authFlow, authLinks, "playerName"),
     )
 
@@ -429,15 +491,15 @@ internal fun SendspinSectionTv(
     OverflowMenuButton(
         options = SettingsRepository.CODECS.map { item ->
             OverflowMenuOption(
-                title = item.localizedTitle(),
-            ) { viewModel.setSendspinCodecPreference(item) }
+                title = item.displayName,
+            ) { onSettingsChange { settings -> settings.copy(codecPreference = item) } }
         },
         buttonContent = { onClick ->
             Row(
                 modifier = Modifier
                     .tvFocus(authFlow, authLinks, "codec")
                     .fillMaxWidth()
-                    .clickable(enabled = !sendspinEnabled) { onClick() }
+                    .clickable { onClick() }
                     .padding(bottom = 12.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
@@ -449,28 +511,51 @@ internal fun SendspinSectionTv(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = sendspinCodecPreference.localizedTitle(),
+                        text = settings.codecPreference.displayName,
                         style = MaterialTheme.typography.bodyLarge,
-                        color = if (sendspinEnabled) {
-                            MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                        } else {
-                            MaterialTheme.colorScheme.onBackground
-                        },
+                        color = MaterialTheme.colorScheme.onBackground,
                     )
                 }
                 Icon(
                     modifier = Modifier.size(24.dp),
                     imageVector = Icons.Default.ExpandMore,
                     contentDescription = stringResource(Res.string.cd_select_codec),
-                    tint = if (sendspinEnabled) {
-                        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         },
     )
+
+    // Hi-res audio toggle
+    val hiResAvailable = settings.hiResAvailable()
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = stringResource(Res.string.settings_hi_res_audio),
+            color = if (hiResAvailable) {
+                MaterialTheme.colorScheme.onBackground
+            } else {
+                MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+            },
+        )
+        Switch(
+            checked = settings.effectiveBitDepth() == SettingsRepository.BIT_DEPTH_HI_RES,
+            onCheckedChange = { hiRes ->
+                onSettingsChange {
+                    it.copy(
+                        bitDepth = if (hiRes) SettingsRepository.BIT_DEPTH_HI_RES else SettingsRepository.BIT_DEPTH_DEFAULT,
+                    )
+                }
+            },
+            enabled = hiResAvailable,
+            modifier = Modifier.tvFocus(authFlow, authLinks, "hiRes"),
+        )
+    }
 
     // Custom connection toggle
     Row(
@@ -480,39 +565,33 @@ internal fun SendspinSectionTv(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Checkbox(
-            checked = sendspinUseCustomConnection,
-            onCheckedChange = { viewModel.setSendspinUseCustomConnection(it) },
-            enabled = !sendspinEnabled,
+            checked = settings.connectionOverride.enabled,
+            onCheckedChange = { checked ->
+                onSettingsChange { it.copy(connectionOverride = it.connectionOverride.copy(enabled = checked)) }
+            },
             modifier = Modifier.tvFocus(authFlow, authLinks, "customToggle"),
         )
-        Text(
-            text = stringResource(Res.string.settings_custom_sendspin),
-            color = if (sendspinEnabled) {
-                MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-            } else {
-                MaterialTheme.colorScheme.onBackground
-            },
-        )
+        Text(text = stringResource(Res.string.settings_custom_sendspin))
     }
 
     // Connection rows (only shown when using custom connection)
-    if (sendspinUseCustomConnection) {
+    if (settings.connectionOverride.enabled) {
         TvPreferenceRow(
             label = stringResource(Res.string.settings_host),
-            value = sendspinHost,
-            onClick = if (sendspinEnabled) null else ({ editing = "customHost" }),
+            value = settings.connectionOverride.host,
+            onClick = { editing = "customHost" },
             focusModifier = Modifier.tvFocus(authFlow, authLinks, "customHost"),
         )
         TvPreferenceRow(
             label = stringResource(Res.string.settings_port),
-            value = sendspinPort.toString(),
-            onClick = if (sendspinEnabled) null else ({ editing = "customPort" }),
+            value = settings.connectionOverride.port.toString(),
+            onClick = { editing = "customPort" },
             focusModifier = Modifier.tvFocus(authFlow, authLinks, "customPort"),
         )
         TvPreferenceRow(
             label = stringResource(Res.string.settings_path),
-            value = sendspinPath,
-            onClick = if (sendspinEnabled) null else ({ editing = "customPath" }),
+            value = settings.connectionOverride.path,
+            onClick = { editing = "customPath" },
             focusModifier = Modifier.tvFocus(authFlow, authLinks, "customPath"),
         )
         Row(
@@ -522,40 +601,46 @@ internal fun SendspinSectionTv(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Checkbox(
-                checked = sendspinUseTls,
-                onCheckedChange = { viewModel.setSendspinUseTls(it) },
-                enabled = !sendspinEnabled,
+                checked = settings.connectionOverride.tls,
+                onCheckedChange = { checked ->
+                    onSettingsChange { it.copy(connectionOverride = it.connectionOverride.copy(tls = checked)) }
+                },
                 modifier = Modifier.tvFocus(authFlow, authLinks, "customTls"),
             )
-            Text(
-                text = stringResource(Res.string.settings_use_tls_wss),
-                color = if (sendspinEnabled) {
-                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
-                } else {
-                    MaterialTheme.colorScheme.onBackground
-                },
-            )
+            Text(text = stringResource(Res.string.settings_use_tls_wss))
         }
     }
 
-    // Toggle button on the bottom
-    if (sendspinEnabled) {
+    TvPreferenceRow(
+        label = stringResource(Res.string.settings_buffer_size),
+        value = stringResource(Res.string.settings_buffer_seconds_value, settings.bufferSeconds),
+        onClick = { editing = "buffer" },
+        focusModifier = Modifier.tvFocus(authFlow, authLinks, "buffer"),
+    )
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 12.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
         OutlinedButton(
             modifier = Modifier
-                .tvFocus(authFlow, authLinks, "playerToggle")
-                .fillMaxWidth(),
-            onClick = { viewModel.setSendspinEnabled(false) },
+                .tvFocus(authFlow, authLinks, "reset")
+                .weight(1f),
+            onClick = onReset,
+            enabled = isResettable,
         ) {
-            Text(stringResource(Res.string.settings_disable_local_player))
+            Text(stringResource(Res.string.settings_sendspin_reset_defaults))
         }
-    } else {
-        Button(
+        FilledTonalButton(
             modifier = Modifier
-                .tvFocus(authFlow, authLinks, "playerToggle")
-                .fillMaxWidth(),
-            onClick = { viewModel.setSendspinEnabled(true) },
+                .tvFocus(authFlow, authLinks, "save")
+                .weight(1f),
+            onClick = onSave,
+            enabled = isSavable,
         ) {
-            Text(stringResource(Res.string.settings_enable_local_player))
+            Text(stringResource(Res.string.settings_sendspin_save_changes))
         }
     }
 }

@@ -31,6 +31,8 @@ import io.music_assistant.client.data.model.client.ClickContext
 import io.music_assistant.client.data.model.client.QueueOption
 import io.music_assistant.client.data.model.client.itemKind
 import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.server.PlayMediaSupport
+import io.music_assistant.client.data.play.PlayMode
 import io.music_assistant.client.ui.compose.common.OverflowMenuButton
 import io.music_assistant.client.ui.compose.common.items.DefaultClickActionsDialog
 import io.music_assistant.client.ui.compose.common.items.ItemAction
@@ -39,6 +41,7 @@ import io.music_assistant.client.ui.compose.common.items.icon
 import io.music_assistant.client.ui.compose.common.items.resolvePlayButtonActions
 import io.music_assistant.client.ui.compose.common.items.title
 import io.music_assistant.client.ui.compose.common.items.toOverflowOption
+import io.music_assistant.client.ui.compose.common.items.toPlayMode
 import io.music_assistant.client.ui.contentColorByLuminance
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.cd_play_options
@@ -48,7 +51,7 @@ import org.jetbrains.compose.resources.stringResource
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 fun ItemPlayButton(
     item: AppMediaItem,
-    onPlayClick: (QueueOption, Boolean) -> Unit,
+    onPlayClick: (PlayMode) -> Unit,
     tint: Color = MaterialTheme.colorScheme.primary,
     modifier: Modifier = Modifier,
     // Android TV: the detail screen lands initial focus on this button when the page loads; the
@@ -76,11 +79,7 @@ fun ItemPlayButton(
     var showCustomizeDialog by remember { mutableStateOf(false) }
 
     val runPlayAction: (ItemAction) -> Unit = { action ->
-        when (action) {
-            is ItemAction.Play -> onPlayClick(action.queueOption, false)
-            ItemAction.StartEndlessMix -> onPlayClick(QueueOption.REPLACE, true)
-            else -> Unit
-        }
+        action.toPlayMode()?.let(onPlayClick)
     }
 
     SplitButtonLayout(
@@ -115,6 +114,7 @@ fun ItemPlayButton(
                 onCustomize = if (kind != null) ({ showCustomizeDialog = true }) else null,
                 onPlayAction = runPlayAction,
                 context = clickActionConfig.context,
+                playMediaSupport = clickActionConfig.playMediaSupport,
             ) { onClick ->
                 TrailingButton(onClick = onClick, colors = buttonColors) {
                     Icon(
@@ -141,9 +141,10 @@ private fun PlayOverflow(
     onCustomize: (() -> Unit)?,
     onPlayAction: (ItemAction) -> Unit,
     context: ClickContext?,
+    playMediaSupport: PlayMediaSupport,
     button: @Composable (() -> Unit) -> Unit,
 ) {
-    val actions = resolvePlayButtonActions(item, default, onCustomize != null)
+    val actions = resolvePlayButtonActions(item, default, playMediaSupport, onCustomize != null)
     val options = actions.map { action ->
         action.toOverflowOption(context) {
             if (it == ItemAction.Customize) onCustomize?.invoke() else onPlayAction(it)

@@ -44,10 +44,12 @@ import io.music_assistant.client.ui.compose.common.icons.ShuffleOffIcon
 import io.music_assistant.client.ui.compose.common.icons.ShuffleOnIcon
 import io.music_assistant.client.ui.compose.common.icons.SkipBackIcon
 import io.music_assistant.client.ui.compose.common.icons.SkipForwardIcon
+import io.music_assistant.client.ui.compose.common.icons.StopIcon
 import io.music_assistant.client.ui.compose.common.tvFocus
 import musicassistantclient.composeapp.generated.resources.Res
 import musicassistantclient.composeapp.generated.resources.action_pause
 import musicassistantclient.composeapp.generated.resources.action_play
+import musicassistantclient.composeapp.generated.resources.action_stop
 import org.jetbrains.compose.resources.stringResource
 
 @Composable
@@ -74,6 +76,8 @@ fun PlayerControls(
     // A live input never ends, so shuffle and repeat have nothing to act on.
     val isLiveInput = queue?.currentItem?.track is AudioSource
     val itemsCount = playerData.queueItems?.size ?: 0
+    // Like the web app, Stop stays available while playing even if the item is not playable.
+    val showStop = player.isPlaying && !playerData.canPauseContent
     // Next is a chapter jump when navigation applies (PlayerRequestFactory), so it stays
     // enabled while a chapter starts after the (event-driven, close-enough) position.
     val elapsedSec = queue?.elapsedTime ?: 0.0
@@ -179,19 +183,26 @@ fun PlayerControls(
             // queue is empty, which is exactly when a first play request is in flight.
             Box(contentAlignment = Alignment.Center) {
                 ActionButton(
-                    icon = when (player.isPlaying) {
-                        true -> PauseIcon
-                        false -> PlayIcon
+                    icon = when {
+                        showStop -> StopIcon
+                        player.isPlaying -> PauseIcon
+                        else -> PlayIcon
                     },
                     tint = tint,
                     size = mainButtonSize,
-                    enabled = playerEnabled && buttonsEnabled,
-                    contentDescription = when (player.isPlaying) {
-                        true -> stringResource(Res.string.action_pause)
-                        false -> stringResource(Res.string.action_play)
+                    enabled = playerEnabled && (buttonsEnabled || showStop),
+                    contentDescription = when {
+                        showStop -> stringResource(Res.string.action_stop)
+                        player.isPlaying -> stringResource(Res.string.action_pause)
+                        else -> stringResource(Res.string.action_play)
                     },
                     modifier = Modifier.tvFocus(tvFocusFlow, focusLinks, "play"),
-                ) { playerAction(playerData, PlayerAction.TogglePlayPause) }
+                ) {
+                    playerAction(
+                        playerData,
+                        if (showStop) PlayerAction.Stop else PlayerAction.TogglePlayPause,
+                    )
+                }
                 if (playerData.playRequestPending) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(mainButtonSize),

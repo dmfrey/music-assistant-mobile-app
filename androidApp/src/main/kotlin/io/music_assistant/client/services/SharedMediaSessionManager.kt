@@ -33,6 +33,7 @@ import io.music_assistant.client.data.model.client.RepeatMode
 import io.music_assistant.client.data.model.client.ResolvedChapter
 import io.music_assistant.client.data.model.client.chapterSeekSeconds
 import io.music_assistant.client.data.model.client.items.AppMediaItem
+import io.music_assistant.client.data.model.client.items.EpisodeNumberFormat
 import io.music_assistant.client.data.model.client.items.LongFormSeekDefaults
 import io.music_assistant.client.data.model.client.items.canBeFavorited
 import io.music_assistant.client.data.model.client.items.isLongFormSpokenContent
@@ -91,6 +92,14 @@ private val SESSION_TRANSPORT_ACTIONS: Long =
         PlaybackStateCompat.ACTION_SKIP_TO_QUEUE_ITEM or
         PlaybackStateCompat.ACTION_PLAY_FROM_MEDIA_ID or
         PlaybackStateCompat.ACTION_PLAY_FROM_SEARCH
+
+/** [SESSION_TRANSPORT_ACTIONS] for [data]: no seek bar to drag where it cannot seek. */
+internal fun sessionTransportActions(data: MediaNotificationData): Long =
+    if (data.isSeekable) {
+        SESSION_TRANSPORT_ACTIONS
+    } else {
+        SESSION_TRANSPORT_ACTIONS and PlaybackStateCompat.ACTION_SEEK_TO.inv()
+    }
 
 // The API 33+ media card shows the first two custom actions; the pre-33 notification mirrors it.
 private const val NOTIFICATION_CUSTOM_ACTION_SLOTS = 2
@@ -392,7 +401,10 @@ class SharedMediaSessionManager(
         return map { row ->
             when (row) {
                 is QueueDisplayRow.QueueItem -> MediaSessionCompat.QueueItem(
-                    (row.item.track as AppMediaItem).toMediaDescription(defaultIconUri)
+                    (row.item.track as AppMediaItem).toMediaDescription(
+                        defaultIconUri,
+                        episodeNumbers = strings?.episodeNumbers ?: EpisodeNumberFormat.SOURCE,
+                    )
                         .also { parentDescription = it },
                     row.sessionId,
                 )
@@ -646,7 +658,7 @@ class SharedMediaSessionManager(
             PlaybackStateCompat.STATE_PAUSED
         }
         val playbackState = PlaybackStateCompat.Builder()
-            .setActions(SESSION_TRANSPORT_ACTIONS)
+            .setActions(sessionTransportActions(data))
             .setState(
                 state,
                 data.elapsedTime ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN,
@@ -662,27 +674,14 @@ class SharedMediaSessionManager(
             .build()
         session.setPlaybackState(playbackState)
 
-        val metadata = MediaMetadataCompat.Builder()
-            .putString(
-                MediaMetadataCompat.METADATA_KEY_TITLE,
-                titleMetadata(data),
-            )
-            .putString(
-                MediaMetadataCompat.METADATA_KEY_ARTIST,
-                artistMetadata(data, multiPlayer),
-            )
-            .putString(
-                MediaMetadataCompat.METADATA_KEY_ALBUM,
-                data.album,
-            )
-            .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
-            .also { builder ->
-                data.duration?.let {
-                    builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, it)
-                }
-            }
-            .build()
-        session.setMetadata(metadata)
+        session.setMetadata(
+            buildMediaSessionMetadata(
+                data = data,
+                bitmap = bitmap,
+                unknownTrack = strings?.unknownTrack ?: "",
+                artist = artistMetadata(data, multiPlayer),
+            ),
+        )
     }
 
     private fun titleMetadata(data: MediaNotificationData): String =
@@ -824,3 +823,57 @@ class SharedMediaSessionManager(
             R.drawable.baseline_arrow_right_alt_24
         }
 }
+
+/**
+ * Build the canonical metadata plus Android's preferred display projection. Radio streams
+ * show the on-air title and artist, with the station in the description when that adds
+ * information. If the station has to stand in for a missing title, don't repeat it in the
+ * description. MediaMetadataCompat only honors DISPLAY_DESCRIPTION when DISPLAY_TITLE is set.
+ * Non-radio items keep the platform's normal title / artist / album description fallback.
+ */
+internal fun buildMediaSessionMetadata(
+    data: MediaNotificationData,
+    bitmap: Bitmap?,
+    unknownTrack: String,
+    artist: String,
+): MediaMetadataCompat {
+    val station = data.stationName?.takeIf { it.isNotBlank() }
+    // Preserve the existing non-radio title value exactly. For radio, use the station when
+    // the server has not supplied an on-air title (including a blank title).
+    val title = if (station != null) {
+        data.name?.takeIf { it.isNotBlank() } ?: station
+    } else {
+        data.name ?: unknownTrack
+    }
+    val displayArtist = artist.takeIf {
+        data.artist?.isNotBlank() == true && !sameMetadataLabel(title, data.artist)
+    }
+    val displayStation = station?.takeUnless {
+        sameMetadataLabel(it, title) || sameMetadataLabel(it, data.artist)
+    }
+    return MediaMetadataCompat.Builder()
+        .putString(MediaMetadataCompat.METADATA_KEY_TITLE, title)
+        .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, artist)
+        .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, data.album)
+        .also { builder ->
+            station?.let {
+                builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_TITLE, title)
+                displayArtist?.let { value ->
+                    builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, value)
+                }
+                displayStation?.let { value ->
+                    builder.putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, value)
+                }
+            }
+        }
+        .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, bitmap)
+        .also { builder ->
+            data.duration?.let {
+                builder.putLong(MediaMetadataCompat.METADATA_KEY_DURATION, it)
+            }
+        }
+        .build()
+}
+
+private fun sameMetadataLabel(first: String, second: String?): Boolean =
+    second != null && first.trim().equals(second.trim(), ignoreCase = true)

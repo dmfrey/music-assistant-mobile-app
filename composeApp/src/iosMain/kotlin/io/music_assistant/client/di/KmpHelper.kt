@@ -63,6 +63,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.koin.core.component.KoinComponent
 import org.koin.core.component.inject
@@ -178,20 +179,24 @@ object KmpHelper : KoinComponent {
         completion: (NativeArtworkResult?) -> Unit,
     ): Cancellable {
         val job = scope.launch {
-            val result = try {
-                val freshToken = artworkRepository.resolveFreshToken(urlString)
-                if (freshToken != null && cachedVersion?.invoke(freshToken) == true) {
-                    null
-                } else {
-                    artworkRepository.load(urlString).let {
-                        NativeArtworkResult(it.bytes.toNSData(), it.mimeType, it.token, it.reusable)
+            // Hashing and byte copies run off main; only [completion] runs on [scope]. The
+            // [cachedVersion] probe runs off main too: Swift backs it with a thread-safe NSCache.
+            val result = withContext(Dispatchers.Default) {
+                try {
+                    val freshToken = artworkRepository.resolveFreshToken(urlString)
+                    if (freshToken != null && cachedVersion?.invoke(freshToken) == true) {
+                        null
+                    } else {
+                        artworkRepository.load(urlString).let {
+                            NativeArtworkResult(it.bytes.toNSData(), it.mimeType, it.token, it.reusable)
+                        }
                     }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    log.w { "Artwork pre-flight failed (${e::class.simpleName ?: "Throwable"})" }
+                    null
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Throwable) {
-                log.w { "Artwork pre-flight failed (${e::class.simpleName ?: "Throwable"})" }
-                null
             }
             completion(result)
         }
@@ -283,7 +288,10 @@ object KmpHelper : KoinComponent {
         val startMs = currentTimeMillis()
         log.i { "fetch[$label] start" }
         mainScope.launch {
-            val items: List<T>? = withTimeoutOrNull(FETCH_TIMEOUT_MS) { fetch() }
+            // Decode, mapping and post-processing run off main; [completion] stays on main for Swift.
+            val items: List<T>? = withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+                withContext(Dispatchers.Default) { fetch() }
+            }
             val elapsed = currentTimeMillis() - startMs
             if (items == null) {
                 log.i { "fetch[$label] timeout after ${elapsed}ms" }
@@ -500,11 +508,17 @@ object KmpHelper : KoinComponent {
     fun playOnLocalPlayer(item: AppMediaItem, option: QueueOption): Boolean =
         dispatchLocal(item, option, endlessMixMode = false)
 
-    private fun dispatchLocal(item: AppMediaItem, option: QueueOption, endlessMixMode: Boolean): Boolean {
+    private fun dispatchLocal(
+        item: AppMediaItem,
+        option: QueueOption,
+        endlessMixMode: Boolean,
+        shuffle: Boolean = false,
+    ): Boolean {
         return dispatchLocal(
             mediaUris = listOfNotNull(item.mediaUri),
             option = option,
             endlessMixMode = endlessMixMode,
+            shuffle = shuffle,
         )
     }
 
@@ -513,6 +527,7 @@ object KmpHelper : KoinComponent {
         option: QueueOption,
         endlessMixMode: Boolean,
         startItem: String? = null,
+        shuffle: Boolean = false,
     ): Boolean {
         val player = mainDataSource.localPlayer.value?.player
         val plan = planLocalPlayerDispatch(
@@ -522,6 +537,7 @@ object KmpHelper : KoinComponent {
             option = option,
             endlessMixMode = endlessMixMode,
             startItem = startItem,
+            shuffle = shuffle,
         ) ?: return false
         plan.detachFrom?.let { syncedToId ->
             log.i { "dispatchLocal($option, endlessMix=$endlessMixMode): detaching ${plan.playerId} from $syncedToId" }
@@ -552,7 +568,7 @@ object KmpHelper : KoinComponent {
     fun playCarAction(item: AppMediaItem, actionName: String): Boolean {
         val action = runCatching { DefaultClickOption.valueOf(actionName) }.getOrNull() ?: return false
         val dispatch = action.toCarDispatch()
-        return dispatchLocal(item, dispatch.option, dispatch.endlessMixMode)
+        return dispatchLocal(item, dispatch.option, dispatch.endlessMixMode, dispatch.shuffle)
     }
 
     /**
@@ -576,6 +592,7 @@ object KmpHelper : KoinComponent {
                 option = dispatch.option,
                 endlessMixMode = dispatch.endlessMixMode,
                 startItem = dispatch.startItem,
+                shuffle = dispatch.shuffle,
             )
         ) {
             action.name
@@ -603,32 +620,26 @@ object KmpHelper : KoinComponent {
     /**
      * Set the favorite flag on an [AppMediaItem]. Drives `INMediaAffinityIntent`
      * mapping from Swift: `like` ⇒ `favorite = true`, `dislike` ⇒ `favorite = false`.
-     * MA only tracks favorites as a boolean — dislike removes an existing favorite
-     * but cannot record an explicit "do not play this" signal. Adding requires a
-     * URI; removal works by id+mediaType.
+     * From server 2.11 ([MainDataSource.dislikeSupported]) a dislike is recorded as one;
+     * an older server has no dislike, so there it removes an existing favorite. Writes
+     * go through [MainDataSource.setFavorite], so the now-playing heart follows at once.
+     * A like and a dislike need a URI ([AppMediaItem.mediaUri]); removal works by
+     * id+mediaType.
      *
      * Returns `true` synchronously when the request was dispatched, `false` when
      * the user's role lacks `library.write` or we couldn't form a valid request
-     * (an add for an item with no URI). Network outcome is fire-and-forget — Swift
-     * uses the synchronous return to avoid lying to Siri about success.
+     * (a like or dislike for an item with no URI). Network outcome is fire-and-forget —
+     * Swift uses the synchronous return to avoid lying to Siri about success.
      */
     fun setFavorite(item: AppMediaItem, favorite: Boolean): Boolean {
         if (!mainDataSource.grantedScopes.value.canEditLibrary) return false
-        if (favorite) {
-            // Prefer plain `uri`; fall back to `mediaUri`. The base class uses
-            // `uri` directly; subclasses like Genre override `mediaUri` to
-            // synthesize one when the server didn't supply it.
-            val uri = item.uri ?: item.mediaUri ?: return false
-            mainScope.launch {
-                serviceClient.sendRequest(Request.Library.addFavorite(uri))
-            }
-        } else {
-            mainScope.launch {
-                serviceClient.sendRequest(
-                    Request.Library.removeFavorite(item.itemId, item.mediaType),
-                )
-            }
+        val state = when {
+            favorite -> true
+            mainDataSource.dislikeSupported.value -> false
+            else -> null
         }
+        if (state != null && item.mediaUri == null) return false
+        mainDataSource.setFavorite(item, state)
         return true
     }
 }
